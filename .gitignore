@@ -1,0 +1,38 @@
+### Scala / sbt ###
+target/
+project/target/
+project/project/
+.bsp/
+.metals/
+.bloop/
+
+### IntelliJ IDEA ###
+.idea/
+*.iws
+*.iml
+*.ipr
+
+### Eclipse ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### VS Code ###
+.vscode/
+
+### Native build artifacts ###
+*.so
+*.o
+*.dylib
+*.a
+
+### OS ###
+.DS_Store
+Thumbs.db
+
+### Claude Code ###
+.claude/
