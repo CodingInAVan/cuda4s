@@ -1,3 +1,0 @@
-/home/myounghoshin/IdeaProjects/scala-cuda-jit/native/build/CMakeFiles/cudajitjni.dir
-/home/myounghoshin/IdeaProjects/scala-cuda-jit/native/build/CMakeFiles/edit_cache.dir
-/home/myounghoshin/IdeaProjects/scala-cuda-jit/native/build/CMakeFiles/rebuild_cache.dir
