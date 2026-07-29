@@ -142,3 +142,6 @@ final case class KernelInvocation[Args <: Tuple](
 ):
   private[flight4s] def packedArguments: PackedKernelArguments =
     kernel.signature.pack(arguments)
+
+  private[flight4s] def nativeArguments: NativeArgumentStorage =
+    NativeArgumentStorage.materialize(packedArguments)
