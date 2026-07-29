@@ -40,3 +40,57 @@ class DslSafetySuite extends FunSuite:
     )
 
     assert(errors.nonEmpty)
+
+  test("floating-point remainder is rejected"):
+    val errors = typeCheckErrors(
+      """
+        import com.cuda4s.core.dsl.CudaDsl.*
+        val invalid = literal(1.0f) % literal(0.5f)
+      """
+    )
+
+    assert(errors.nonEmpty)
+
+  test("F16 and BF16 support declared arithmetic capabilities"):
+    val errors = typeCheckErrors(
+      """
+        import com.cuda4s.core.dsl.CudaDsl.*
+        import com.cuda4s.core.types.*
+
+        val f16a = literal(Float16.fromBits(0.toShort))
+        val f16b = literal(Float16.fromBits(0.toShort))
+        val bf16a = literal(BFloat16.fromBits(0.toShort))
+        val bf16b = literal(BFloat16.fromBits(0.toShort))
+
+        val f16Result = f16a + f16b
+        val bf16Result = bf16a * bf16b
+      """
+    )
+
+    assertEquals(errors, Nil)
+
+  test("FP8 generic arithmetic is rejected"):
+    val errors = typeCheckErrors(
+      """
+        import com.cuda4s.core.dsl.CudaDsl.*
+        import com.cuda4s.core.types.*
+
+        val left = literal(Float8E4M3.fromBits(0.toByte))
+        val right = literal(Float8E4M3.fromBits(0.toByte))
+        val invalid = left + right
+      """
+    )
+
+    assert(errors.nonEmpty)
+
+  test("FP8 conversion is explicit and type checks"):
+    val errors = typeCheckErrors(
+      """
+        import com.cuda4s.core.dsl.CudaDsl.*
+
+        val narrowed = convert.f32ToFP8E4M3(literal(1.0f))
+        val restored = convert.fp8E4M3ToF32(narrowed)
+      """
+    )
+
+    assertEquals(errors, Nil)

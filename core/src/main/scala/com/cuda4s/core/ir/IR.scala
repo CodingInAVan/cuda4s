@@ -50,6 +50,24 @@ final case class Intrinsic[T](
     span: SourceSpan = SourceSpan.Unknown
 ) extends Expr[T]
 
+enum RoundingMode:
+  case NearestEven
+  case TowardZero
+  case TowardPositive
+  case TowardNegative
+
+enum SaturationMode:
+  case NoSaturation
+  case SaturateFinite
+
+final case class Convert[From, To](
+    value: Expr[From],
+    valueType: CudaType[To],
+    rounding: RoundingMode,
+    saturation: SaturationMode,
+    span: SourceSpan = SourceSpan.Unknown
+) extends Expr[To]
+
 sealed trait AddressSpace
 sealed trait Global extends AddressSpace
 sealed trait Shared extends AddressSpace

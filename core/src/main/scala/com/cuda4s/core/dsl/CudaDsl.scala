@@ -81,38 +81,115 @@ object CudaDsl:
     def z: Expr[Int] = Intrinsic("blockDim.z", I32)
 
   extension [T](left: Expr[T])
-    def +(right: Expr[T])(using valueType: NumericCudaType[T]): Expr[T] =
+    def +(right: Expr[T])(using valueType: AdditiveType[T]): Expr[T] =
       Binary(BinaryOperator.Add, left, right, valueType)
 
-    def -(right: Expr[T])(using valueType: NumericCudaType[T]): Expr[T] =
+    def -(right: Expr[T])(using valueType: AdditiveType[T]): Expr[T] =
       Binary(BinaryOperator.Subtract, left, right, valueType)
 
-    def *(right: Expr[T])(using valueType: NumericCudaType[T]): Expr[T] =
+    def *(right: Expr[T])(using valueType: MultiplicativeType[T]): Expr[T] =
       Binary(BinaryOperator.Multiply, left, right, valueType)
 
-    def /(right: Expr[T])(using valueType: NumericCudaType[T]): Expr[T] =
+    def /(right: Expr[T])(using valueType: DivisibleType[T]): Expr[T] =
       Binary(BinaryOperator.Divide, left, right, valueType)
 
-    def %(right: Expr[T])(using valueType: NumericCudaType[T]): Expr[T] =
+    def %(right: Expr[T])(using valueType: RemainderType[T]): Expr[T] =
       Binary(BinaryOperator.Remainder, left, right, valueType)
 
-    def <(right: Expr[T])(using valueType: NumericCudaType[T]): Expr[Boolean] =
+    def <(right: Expr[T])(using valueType: OrderedType[T]): Expr[Boolean] =
       Compare(ComparisonOperator.LessThan, left, right, valueType)
 
-    def <=(right: Expr[T])(using valueType: NumericCudaType[T]): Expr[Boolean] =
+    def <=(right: Expr[T])(using valueType: OrderedType[T]): Expr[Boolean] =
       Compare(ComparisonOperator.LessThanOrEqual, left, right, valueType)
 
-    def >(right: Expr[T])(using valueType: NumericCudaType[T]): Expr[Boolean] =
+    def >(right: Expr[T])(using valueType: OrderedType[T]): Expr[Boolean] =
       Compare(ComparisonOperator.GreaterThan, left, right, valueType)
 
-    def >=(right: Expr[T])(using valueType: NumericCudaType[T]): Expr[Boolean] =
+    def >=(right: Expr[T])(using valueType: OrderedType[T]): Expr[Boolean] =
       Compare(ComparisonOperator.GreaterThanOrEqual, left, right, valueType)
 
-    def ===(right: Expr[T]): Expr[Boolean] =
-      Compare(ComparisonOperator.Equal, left, right, left.valueType)
+    def ===(right: Expr[T])(using valueType: EqualityComparableType[T]): Expr[Boolean] =
+      Compare(ComparisonOperator.Equal, left, right, valueType)
 
-    def !==(right: Expr[T]): Expr[Boolean] =
-      Compare(ComparisonOperator.NotEqual, left, right, left.valueType)
+    def !==(right: Expr[T])(using valueType: EqualityComparableType[T]): Expr[Boolean] =
+      Compare(ComparisonOperator.NotEqual, left, right, valueType)
+
+  object convert:
+    def f32ToF16(
+        value: Expr[Float],
+        rounding: RoundingMode = RoundingMode.NearestEven
+    ): Expr[Float16] =
+      Convert(
+        value = value,
+        valueType = F16,
+        rounding = rounding,
+        saturation = SaturationMode.NoSaturation
+      )
+
+    def f16ToF32(value: Expr[Float16]): Expr[Float] =
+      Convert(
+        value = value,
+        valueType = F32,
+        rounding = RoundingMode.NearestEven,
+        saturation = SaturationMode.NoSaturation
+      )
+
+    def f32ToBF16(
+        value: Expr[Float],
+        rounding: RoundingMode = RoundingMode.NearestEven
+    ): Expr[BFloat16] =
+      Convert(
+        value = value,
+        valueType = BF16,
+        rounding = rounding,
+        saturation = SaturationMode.NoSaturation
+      )
+
+    def bf16ToF32(value: Expr[BFloat16]): Expr[Float] =
+      Convert(
+        value = value,
+        valueType = F32,
+        rounding = RoundingMode.NearestEven,
+        saturation = SaturationMode.NoSaturation
+      )
+
+    def f32ToFP8E4M3(
+        value: Expr[Float],
+        saturation: SaturationMode = SaturationMode.SaturateFinite
+    ): Expr[Float8E4M3] =
+      Convert(
+        value = value,
+        valueType = FP8E4M3,
+        rounding = RoundingMode.NearestEven,
+        saturation = saturation
+      )
+
+    def fp8E4M3ToF32(value: Expr[Float8E4M3]): Expr[Float] =
+      Convert(
+        value = value,
+        valueType = F32,
+        rounding = RoundingMode.NearestEven,
+        saturation = SaturationMode.NoSaturation
+      )
+
+    def f32ToFP8E5M2(
+        value: Expr[Float],
+        saturation: SaturationMode = SaturationMode.SaturateFinite
+    ): Expr[Float8E5M2] =
+      Convert(
+        value = value,
+        valueType = FP8E5M2,
+        rounding = RoundingMode.NearestEven,
+        saturation = saturation
+      )
+
+    def fp8E5M2ToF32(value: Expr[Float8E5M2]): Expr[Float] =
+      Convert(
+        value = value,
+        valueType = F32,
+        rounding = RoundingMode.NearestEven,
+        saturation = SaturationMode.NoSaturation
+      )
 
   extension [T, Mode <: AccessMode](buffer: BufferParam[T, Mode])
     def apply(index: Expr[Int]): BufferElement[T, Mode] =
