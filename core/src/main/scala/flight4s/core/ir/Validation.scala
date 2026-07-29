@@ -1,6 +1,6 @@
-package com.cuda4s.core.ir
+package flight4s.core.ir
 
-import com.cuda4s.core.types.{Bool, CudaType, I32}
+import flight4s.core.types.{Bool, CudaType, I32}
 
 enum ValidationCode:
   case InvalidKernelName

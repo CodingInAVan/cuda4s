@@ -1,4 +1,4 @@
-package com.cuda4s.core.ir
+package flight4s.core.ir
 
 final case class SourceSpan(
     file: String,
