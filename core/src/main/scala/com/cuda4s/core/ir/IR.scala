@@ -1,6 +1,6 @@
 package com.cuda4s.core.ir
 
-import com.cuda4s.core.types.CudaType
+import com.cuda4s.core.types.{AccumulatorType, AdditiveType, CudaType, I32}
 
 enum BinaryOperator(val cudaToken: String):
   case Add extends BinaryOperator("+")
@@ -50,6 +50,61 @@ final case class Intrinsic[T](
     span: SourceSpan = SourceSpan.Unknown
 ) extends Expr[T]
 
+enum RoundingMode:
+  case NearestEven
+  case TowardZero
+  case TowardPositive
+  case TowardNegative
+
+enum SaturationMode:
+  case NoSaturation
+  case SaturateFinite
+
+final case class Convert[From, To](
+    value: Expr[From],
+    valueType: CudaType[To],
+    rounding: RoundingMode,
+    saturation: SaturationMode,
+    span: SourceSpan = SourceSpan.Unknown
+) extends Expr[To]
+
+final case class ToAccumulator[From, To](
+    value: Expr[From],
+    rule: AccumulatorType[From, To],
+    span: SourceSpan = SourceSpan.Unknown
+) extends Expr[To]:
+  override def valueType: CudaType[To] = rule.accumulatorType
+
+enum ReductionPolicy:
+  case Strict
+  case Deterministic
+  case Fast
+
+final case class ReductionIndex(
+    name: String,
+    span: SourceSpan = SourceSpan.Unknown
+) extends Expr[Int]:
+  override val valueType: CudaType[Int] = I32
+
+final case class LoopIndex(
+    name: String,
+    span: SourceSpan = SourceSpan.Unknown
+) extends Expr[Int]:
+  override val valueType: CudaType[Int] = I32
+
+final case class ReduceSum[Input, Accumulator](
+    index: ReductionIndex,
+    from: Expr[Int],
+    until: Expr[Int],
+    initial: Expr[Accumulator],
+    value: Expr[Input],
+    rule: AccumulatorType[Input, Accumulator],
+    addition: AdditiveType[Accumulator],
+    policy: ReductionPolicy,
+    span: SourceSpan = SourceSpan.Unknown
+) extends Expr[Accumulator]:
+  override def valueType: CudaType[Accumulator] = rule.accumulatorType
+
 sealed trait AddressSpace
 sealed trait Global extends AddressSpace
 sealed trait Shared extends AddressSpace
@@ -59,6 +114,20 @@ sealed trait Constant extends AddressSpace
 sealed trait AccessMode
 sealed trait ReadOnly extends AccessMode
 sealed trait ReadWrite extends AccessMode
+
+enum BufferAccess:
+  case ReadOnly
+  case ReadWrite
+
+sealed trait AccessModeWitness[Mode <: AccessMode]:
+  def access: BufferAccess
+
+object AccessModeWitness:
+  given readOnlyWitness: AccessModeWitness[ReadOnly] with
+    override val access: BufferAccess = BufferAccess.ReadOnly
+
+  given readWriteWitness: AccessModeWitness[ReadWrite] with
+    override val access: BufferAccess = BufferAccess.ReadWrite
 
 sealed trait Place[T, Space <: AddressSpace, Mode <: AccessMode]:
   def valueType: CudaType[T]
@@ -90,9 +159,22 @@ final case class Load[
 sealed trait Stmt:
   def span: SourceSpan
 
+final case class LocalDeclaration[T](
+    local: LocalVariable[T],
+    initial: Expr[T],
+    span: SourceSpan = SourceSpan.Unknown
+) extends Stmt
+
 final case class Store[T, Space <: AddressSpace](
     to: Place[T, Space, ReadWrite],
     value: Expr[T],
+    span: SourceSpan = SourceSpan.Unknown
+) extends Stmt
+
+final case class Accumulate[T](
+    target: LocalVariable[T],
+    value: Expr[T],
+    addition: AdditiveType[T],
     span: SourceSpan = SourceSpan.Unknown
 ) extends Stmt
 
@@ -100,6 +182,14 @@ final case class IfThen(
     condition: Expr[Boolean],
     thenBlock: Block,
     elseBlock: Option[Block] = None,
+    span: SourceSpan = SourceSpan.Unknown
+) extends Stmt
+
+final case class ForLoop(
+    index: LoopIndex,
+    from: Expr[Int],
+    until: Expr[Int],
+    body: Block,
     span: SourceSpan = SourceSpan.Unknown
 ) extends Stmt
 
@@ -124,8 +214,10 @@ final case class ScalarParam[T](
 final case class BufferParam[T, Mode <: AccessMode](
     name: String,
     valueType: CudaType[T]
+)(using accessMode: AccessModeWitness[Mode]
 ) extends KernelParam:
   override type Value = T
+  def access: BufferAccess = accessMode.access
 
 final case class KernelIR(
     name: String,
