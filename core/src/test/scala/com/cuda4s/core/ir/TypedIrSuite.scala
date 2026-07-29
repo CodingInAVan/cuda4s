@@ -65,3 +65,17 @@ class TypedIrSuite extends FunSuite:
     assertEquals(e4m3.saturation, SaturationMode.SaturateFinite)
     assertEquals(e5m2.valueType, FP8E5M2)
     assertEquals(e5m2.saturation, SaturationMode.NoSaturation)
+
+  test("low-precision values retain explicit accumulation intent"):
+    val f16Accumulation: Expr[Float] =
+      literal(Float16.fromBits(0.toShort)).toAccumulator
+    val fp8Accumulation: Expr[Float] =
+      literal(Float8E4M3.fromBits(0.toByte)).toAccumulator
+
+    val f16Node = f16Accumulation.asInstanceOf[ToAccumulator[Float16, Float]]
+    val fp8Node = fp8Accumulation.asInstanceOf[ToAccumulator[Float8E4M3, Float]]
+
+    assertEquals(f16Node.rule.inputType, F16)
+    assertEquals(f16Node.valueType, F32)
+    assertEquals(fp8Node.rule.inputType, FP8E4M3)
+    assertEquals(fp8Node.valueType, F32)

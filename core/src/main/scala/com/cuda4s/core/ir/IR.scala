@@ -1,6 +1,6 @@
 package com.cuda4s.core.ir
 
-import com.cuda4s.core.types.CudaType
+import com.cuda4s.core.types.{AccumulatorType, CudaType}
 
 enum BinaryOperator(val cudaToken: String):
   case Add extends BinaryOperator("+")
@@ -68,6 +68,13 @@ final case class Convert[From, To](
     span: SourceSpan = SourceSpan.Unknown
 ) extends Expr[To]
 
+final case class ToAccumulator[From, To](
+    value: Expr[From],
+    rule: AccumulatorType[From, To],
+    span: SourceSpan = SourceSpan.Unknown
+) extends Expr[To]:
+  override def valueType: CudaType[To] = rule.accumulatorType
+
 sealed trait AddressSpace
 sealed trait Global extends AddressSpace
 sealed trait Shared extends AddressSpace
@@ -77,6 +84,20 @@ sealed trait Constant extends AddressSpace
 sealed trait AccessMode
 sealed trait ReadOnly extends AccessMode
 sealed trait ReadWrite extends AccessMode
+
+enum BufferAccess:
+  case ReadOnly
+  case ReadWrite
+
+sealed trait AccessModeWitness[Mode <: AccessMode]:
+  def access: BufferAccess
+
+object AccessModeWitness:
+  given readOnlyWitness: AccessModeWitness[ReadOnly] with
+    override val access: BufferAccess = BufferAccess.ReadOnly
+
+  given readWriteWitness: AccessModeWitness[ReadWrite] with
+    override val access: BufferAccess = BufferAccess.ReadWrite
 
 sealed trait Place[T, Space <: AddressSpace, Mode <: AccessMode]:
   def valueType: CudaType[T]
@@ -142,8 +163,10 @@ final case class ScalarParam[T](
 final case class BufferParam[T, Mode <: AccessMode](
     name: String,
     valueType: CudaType[T]
+)(using accessMode: AccessModeWitness[Mode]
 ) extends KernelParam:
   override type Value = T
+  def access: BufferAccess = accessMode.access
 
 final case class KernelIR(
     name: String,

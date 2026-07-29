@@ -13,6 +13,10 @@ sealed trait RemainderType[T] extends CudaType[T]
 sealed trait OrderedType[T] extends CudaType[T]
 sealed trait EqualityComparableType[T] extends CudaType[T]
 
+sealed trait AccumulatorType[Input, Accumulator]:
+  def inputType: CudaType[Input]
+  def accumulatorType: CudaType[Accumulator]
+
 final case class UInt private (bits: Int) extends AnyVal
 
 object UInt:
@@ -191,3 +195,36 @@ object EqualityComparableType:
   given bfloat16Type: EqualityComparableType[BFloat16] = BF16
   given floatType: EqualityComparableType[Float] = F32
   given doubleType: EqualityComparableType[Double] = F64
+
+object AccumulatorType:
+  given intAccumulator: AccumulatorType[Int, Int] with
+    override val inputType: CudaType[Int] = I32
+    override val accumulatorType: CudaType[Int] = I32
+
+  given uintAccumulator: AccumulatorType[UInt, UInt] with
+    override val inputType: CudaType[UInt] = U32
+    override val accumulatorType: CudaType[UInt] = U32
+
+  given float16Accumulator: AccumulatorType[Float16, Float] with
+    override val inputType: CudaType[Float16] = F16
+    override val accumulatorType: CudaType[Float] = F32
+
+  given bfloat16Accumulator: AccumulatorType[BFloat16, Float] with
+    override val inputType: CudaType[BFloat16] = BF16
+    override val accumulatorType: CudaType[Float] = F32
+
+  given floatAccumulator: AccumulatorType[Float, Float] with
+    override val inputType: CudaType[Float] = F32
+    override val accumulatorType: CudaType[Float] = F32
+
+  given doubleAccumulator: AccumulatorType[Double, Double] with
+    override val inputType: CudaType[Double] = F64
+    override val accumulatorType: CudaType[Double] = F64
+
+  given float8E4M3Accumulator: AccumulatorType[Float8E4M3, Float] with
+    override val inputType: CudaType[Float8E4M3] = FP8E4M3
+    override val accumulatorType: CudaType[Float] = F32
+
+  given float8E5M2Accumulator: AccumulatorType[Float8E5M2, Float] with
+    override val inputType: CudaType[Float8E5M2] = FP8E5M2
+    override val accumulatorType: CudaType[Float] = F32

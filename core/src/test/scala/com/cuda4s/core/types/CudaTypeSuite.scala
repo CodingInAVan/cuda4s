@@ -38,3 +38,11 @@ class CudaTypeSuite extends FunSuite:
     assertEquals(summon[AdditiveType[Float]], F32)
     assertEquals(summon[RemainderType[Int]], I32)
     assertEquals(summon[OrderedType[Float16]], F16)
+
+  test("default accumulation types widen low-precision values"):
+    assertEquals(summon[AccumulatorType[Float16, Float]].inputType, F16)
+    assertEquals(summon[AccumulatorType[Float16, Float]].accumulatorType, F32)
+    assertEquals(summon[AccumulatorType[BFloat16, Float]].accumulatorType, F32)
+    assertEquals(summon[AccumulatorType[Float8E4M3, Float]].accumulatorType, F32)
+    assertEquals(summon[AccumulatorType[Float8E5M2, Float]].accumulatorType, F32)
+    assertEquals(summon[AccumulatorType[Double, Double]].accumulatorType, F64)

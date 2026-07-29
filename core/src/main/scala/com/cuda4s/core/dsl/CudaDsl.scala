@@ -114,6 +114,9 @@ object CudaDsl:
     def !==(right: Expr[T])(using valueType: EqualityComparableType[T]): Expr[Boolean] =
       Compare(ComparisonOperator.NotEqual, left, right, valueType)
 
+    def toAccumulator[A](using rule: AccumulatorType[T, A]): Expr[A] =
+      ToAccumulator(left, rule)
+
   object convert:
     def f32ToF16(
         value: Expr[Float],

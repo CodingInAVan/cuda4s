@@ -94,3 +94,31 @@ class DslSafetySuite extends FunSuite:
     )
 
     assertEquals(errors, Nil)
+
+  test("low-precision values have declared accumulation types"):
+    val errors = typeCheckErrors(
+      """
+        import com.cuda4s.core.dsl.CudaDsl.*
+        import com.cuda4s.core.ir.Expr
+        import com.cuda4s.core.types.*
+
+        val f16: Expr[Float] =
+          literal(Float16.fromBits(0.toShort)).toAccumulator
+        val bf16: Expr[Float] =
+          literal(BFloat16.fromBits(0.toShort)).toAccumulator
+        val fp8: Expr[Float] =
+          literal(Float8E5M2.fromBits(0.toByte)).toAccumulator
+      """
+    )
+
+    assertEquals(errors, Nil)
+
+  test("Boolean values cannot be accumulated"):
+    val errors = typeCheckErrors(
+      """
+        import com.cuda4s.core.dsl.CudaDsl.*
+        val invalid = literal(true).toAccumulator
+      """
+    )
+
+    assert(errors.nonEmpty)
