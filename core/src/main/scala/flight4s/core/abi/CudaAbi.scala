@@ -5,19 +5,20 @@ import java.nio.{ByteBuffer, ByteOrder}
 import flight4s.core.types.*
 
 enum CudaAbiType(
+    val nativeCode: Byte,
     val sizeBytes: Int,
     val alignmentBytes: Int
 ):
-  case Bool8 extends CudaAbiType(1, 1)
-  case SignedInt32 extends CudaAbiType(4, 4)
-  case UnsignedInt32 extends CudaAbiType(4, 4)
-  case Float16 extends CudaAbiType(2, 2)
-  case BFloat16 extends CudaAbiType(2, 2)
-  case Float32 extends CudaAbiType(4, 4)
-  case Float64 extends CudaAbiType(8, 8)
-  case Float8E4M3 extends CudaAbiType(1, 1)
-  case Float8E5M2 extends CudaAbiType(1, 1)
-  case DevicePointer64 extends CudaAbiType(8, 8)
+  case Bool8 extends CudaAbiType(1, 1, 1)
+  case SignedInt32 extends CudaAbiType(2, 4, 4)
+  case UnsignedInt32 extends CudaAbiType(3, 4, 4)
+  case Float16 extends CudaAbiType(4, 2, 2)
+  case BFloat16 extends CudaAbiType(5, 2, 2)
+  case Float32 extends CudaAbiType(6, 4, 4)
+  case Float64 extends CudaAbiType(7, 8, 8)
+  case Float8E4M3 extends CudaAbiType(8, 1, 1)
+  case Float8E5M2 extends CudaAbiType(9, 1, 1)
+  case DevicePointer64 extends CudaAbiType(10, 8, 8)
 
 final case class KernelArgumentAbi(
     name: String,
