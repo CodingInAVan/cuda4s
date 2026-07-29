@@ -1,6 +1,6 @@
 package com.cuda4s.core.ir
 
-import com.cuda4s.core.types.{AccumulatorType, CudaType}
+import com.cuda4s.core.types.{AccumulatorType, AdditiveType, CudaType, I32}
 
 enum BinaryOperator(val cudaToken: String):
   case Add extends BinaryOperator("+")
@@ -74,6 +74,30 @@ final case class ToAccumulator[From, To](
     span: SourceSpan = SourceSpan.Unknown
 ) extends Expr[To]:
   override def valueType: CudaType[To] = rule.accumulatorType
+
+enum ReductionPolicy:
+  case Strict
+  case Deterministic
+  case Fast
+
+final case class ReductionIndex(
+    name: String,
+    span: SourceSpan = SourceSpan.Unknown
+) extends Expr[Int]:
+  override val valueType: CudaType[Int] = I32
+
+final case class ReduceSum[Input, Accumulator](
+    index: ReductionIndex,
+    from: Expr[Int],
+    until: Expr[Int],
+    initial: Expr[Accumulator],
+    value: Expr[Input],
+    rule: AccumulatorType[Input, Accumulator],
+    addition: AdditiveType[Accumulator],
+    policy: ReductionPolicy,
+    span: SourceSpan = SourceSpan.Unknown
+) extends Expr[Accumulator]:
+  override def valueType: CudaType[Accumulator] = rule.accumulatorType
 
 sealed trait AddressSpace
 sealed trait Global extends AddressSpace

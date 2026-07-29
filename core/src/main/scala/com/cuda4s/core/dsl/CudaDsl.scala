@@ -38,6 +38,30 @@ object CudaDsl:
     body(using builder)
     KernelIR(name, params.toVector, builder.result())
 
+  def reduceSum[Input, Accumulator](
+      indexName: String,
+      from: Expr[Int],
+      until: Expr[Int],
+      initial: Expr[Accumulator],
+      policy: ReductionPolicy = ReductionPolicy.Strict
+  )(
+      body: Expr[Int] => Expr[Input]
+  )(using
+      rule: AccumulatorType[Input, Accumulator],
+      addition: AdditiveType[Accumulator]
+  ): Expr[Accumulator] =
+    val index = ReductionIndex(indexName)
+    ReduceSum(
+      index = index,
+      from = from,
+      until = until,
+      initial = initial,
+      value = body(index),
+      rule = rule,
+      addition = addition,
+      policy = policy
+    )
+
   def when(condition: Expr[Boolean])(
       body: BlockBuilder ?=> Unit
   )(using parent: BlockBuilder): Unit =

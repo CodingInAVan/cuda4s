@@ -122,3 +122,22 @@ class DslSafetySuite extends FunSuite:
     )
 
     assert(errors.nonEmpty)
+
+  test("reduction initial values must use the declared accumulator type"):
+    val errors = typeCheckErrors(
+      """
+        import com.cuda4s.core.dsl.CudaDsl.*
+        import com.cuda4s.core.ir.Expr
+        import com.cuda4s.core.types.*
+
+        val invalid: Expr[Float16] =
+          reduceSum(
+            "i",
+            literal(0),
+            literal(8),
+            literal(Float16.fromBits(0.toShort))
+          )(_ => literal(Float16.fromBits(0.toShort)))
+      """
+    )
+
+    assert(errors.nonEmpty)

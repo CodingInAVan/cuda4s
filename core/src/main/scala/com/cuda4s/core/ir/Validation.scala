@@ -13,6 +13,10 @@ enum ValidationCode:
   case WriteToReadOnlyBuffer
   case ExpressionTypeMismatch
   case UnknownIntrinsic
+  case InvalidReductionIndexName
+  case DuplicateReductionIndex
+  case ReductionIndexConflictsWithParameter
+  case UnboundReductionIndex
 
 final case class ValidationError(
     code: ValidationCode,
@@ -131,15 +135,16 @@ object KernelValidator:
   private def validateExpression(
       expression: Expr[?],
       parameters: Map[String, KernelParam],
-      location: String
+      location: String,
+      reductionIndexes: Set[String] = Set.empty
   ): Vector[ValidationError] =
     expression match
       case _: Literal[?] =>
         Vector.empty
 
       case binary: Binary[?] =>
-        validateExpression(binary.left, parameters, s"$location.left") ++
-          validateExpression(binary.right, parameters, s"$location.right") ++
+        validateExpression(binary.left, parameters, s"$location.left", reductionIndexes) ++
+          validateExpression(binary.right, parameters, s"$location.right", reductionIndexes) ++
           requireSameType(
             binary.left.valueType,
             binary.valueType,
@@ -156,8 +161,18 @@ object KernelValidator:
           )
 
       case comparison: Compare[?] =>
-        validateExpression(comparison.left, parameters, s"$location.left") ++
-          validateExpression(comparison.right, parameters, s"$location.right") ++
+        validateExpression(
+          comparison.left,
+          parameters,
+          s"$location.left",
+          reductionIndexes
+        ) ++
+          validateExpression(
+            comparison.right,
+            parameters,
+            s"$location.right",
+            reductionIndexes
+          ) ++
           requireSameType(
             comparison.left.valueType,
             comparison.operandType,
@@ -195,10 +210,20 @@ object KernelValidator:
             )
 
       case conversion: Convert[?, ?] =>
-        validateExpression(conversion.value, parameters, s"$location.value")
+        validateExpression(
+          conversion.value,
+          parameters,
+          s"$location.value",
+          reductionIndexes
+        )
 
       case accumulation: ToAccumulator[?, ?] =>
-        validateExpression(accumulation.value, parameters, s"$location.value") ++
+        validateExpression(
+          accumulation.value,
+          parameters,
+          s"$location.value",
+          reductionIndexes
+        ) ++
           requireSameType(
             accumulation.value.valueType,
             accumulation.rule.inputType,
@@ -207,19 +232,143 @@ object KernelValidator:
             accumulation.value.span
           )
 
+      case index: ReductionIndex =>
+        if reductionIndexes.contains(index.name) then Vector.empty
+        else
+          Vector(
+            ValidationError(
+              ValidationCode.UnboundReductionIndex,
+              s"reduction index '${index.name}' is used outside its reduction",
+              location,
+              index.span
+            )
+          )
+
+      case reduction: ReduceSum[?, ?] =>
+        val indexErrors =
+          (if isIdentifier(reduction.index.name) then Vector.empty
+           else
+             Vector(
+               ValidationError(
+                 ValidationCode.InvalidReductionIndexName,
+                 s"'${reduction.index.name}' is not a valid CUDA reduction index",
+                 s"$location.index",
+                 reduction.index.span
+               )
+             )) ++
+            (if reductionIndexes.contains(reduction.index.name) then
+               Vector(
+                 ValidationError(
+                   ValidationCode.DuplicateReductionIndex,
+                   s"reduction index '${reduction.index.name}' shadows an active index",
+                   s"$location.index",
+                   reduction.index.span
+                 )
+               )
+             else Vector.empty) ++
+            (if parameters.contains(reduction.index.name) then
+               Vector(
+                 ValidationError(
+                   ValidationCode.ReductionIndexConflictsWithParameter,
+                   s"reduction index '${reduction.index.name}' conflicts with a parameter",
+                   s"$location.index",
+                   reduction.index.span
+                 )
+               )
+             else Vector.empty)
+
+        val rangeErrors =
+          validateExpression(
+            reduction.from,
+            parameters,
+            s"$location.from",
+            reductionIndexes
+          ) ++
+            validateExpression(
+              reduction.until,
+              parameters,
+              s"$location.until",
+              reductionIndexes
+            ) ++
+            requireSameType(
+              reduction.from.valueType,
+              I32,
+              "reduction lower bound must have CUDA int type",
+              s"$location.from",
+              reduction.from.span
+            ) ++
+            requireSameType(
+              reduction.until.valueType,
+              I32,
+              "reduction upper bound must have CUDA int type",
+              s"$location.until",
+              reduction.until.span
+            )
+
+        val accumulatorErrors =
+          validateExpression(
+            reduction.initial,
+            parameters,
+            s"$location.initial",
+            reductionIndexes
+          ) ++
+            requireSameType(
+              reduction.initial.valueType,
+              reduction.rule.accumulatorType,
+              "reduction initial value does not match its accumulator type",
+              s"$location.initial",
+              reduction.initial.span
+            ) ++
+            requireSameType(
+              reduction.addition,
+              reduction.rule.accumulatorType,
+              "reduction addition capability does not match its accumulator type",
+              location,
+              reduction.span
+            )
+
+        val valueErrors =
+          validateExpression(
+            reduction.value,
+            parameters,
+            s"$location.value",
+            reductionIndexes + reduction.index.name
+          ) ++
+            requireSameType(
+              reduction.value.valueType,
+              reduction.rule.inputType,
+              "reduction value does not match its accumulation input type",
+              s"$location.value",
+              reduction.value.span
+            )
+
+        indexErrors ++ rangeErrors ++ accumulatorErrors ++ valueErrors
+
       case load: Load[?, ?, ?] =>
-        validatePlace(load.from, parameters, s"$location.from", isWrite = false)
+        validatePlace(
+          load.from,
+          parameters,
+          s"$location.from",
+          isWrite = false,
+          reductionIndexes = reductionIndexes
+        )
 
   private def validatePlace(
       place: Place[?, ?, ?],
       parameters: Map[String, KernelParam],
       location: String,
-      isWrite: Boolean
+      isWrite: Boolean,
+      reductionIndexes: Set[String] = Set.empty
   ): Vector[ValidationError] =
     place match
       case element: BufferElement[?, ?] =>
         val indexErrors =
-          validateExpression(element.index, parameters, s"$location.index") ++
+          validateExpression(
+            element.index,
+            parameters,
+            s"$location.index",
+            reductionIndexes
+          ) ++
             requireSameType(
               element.index.valueType,
               I32,
