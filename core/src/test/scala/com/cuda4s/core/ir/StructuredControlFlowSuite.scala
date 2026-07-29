@@ -9,14 +9,16 @@ class StructuredControlFlowSuite extends FunSuite:
   test("local accumulation inside a unit-stride GPU loop builds structured IR"):
     val source = input[Float16]("source")
     val result = output[Float]("result")
-    val definition = kernel("sumLoop", source, result) {
+    val definition = kernel("sumLoop", params(source, result)) { bindings =>
+      val boundSource = bindings.head
+      val boundResult = bindings.tail.head
       val accumulator = local("accumulator", literal(0.0f))
 
       gpuFor("i", literal(0), literal(32)) { index =>
-        accumulate(accumulator, source(index).read.toAccumulator)
+        accumulate(accumulator, boundSource(index).read.toAccumulator)
       }
 
-      result(literal(0)) := accumulator.read
+      boundResult(literal(0)) := accumulator.read
     }
 
     assert(KernelValidator.validate(definition).isValid)
@@ -32,7 +34,7 @@ class StructuredControlFlowSuite extends FunSuite:
     val accumulator = LocalVariable("accumulator", F32)
     val definition = KernelIR(
       "useBeforeDeclaration",
-      Vector.empty,
+      params(),
       Block(
         Vector(
           Store(accumulator, literal(1.0f)),
@@ -49,7 +51,7 @@ class StructuredControlFlowSuite extends FunSuite:
     val temporary = LocalVariable("temporary", F32)
     val definition = KernelIR(
       "branchScope",
-      Vector.empty,
+      params(),
       Block(
         Vector(
           IfThen(
@@ -70,7 +72,7 @@ class StructuredControlFlowSuite extends FunSuite:
     val index = LoopIndex("i")
     val definition = KernelIR(
       "loopScope",
-      Vector(result),
+      params(result),
       Block(
         Vector(
           ForLoop(index, literal(0), literal(4), Block(Vector.empty)),
@@ -92,7 +94,7 @@ class StructuredControlFlowSuite extends FunSuite:
     val loopIndex = LoopIndex("accumulator")
     val definition = KernelIR(
       "bindingConflicts",
-      Vector(parameter),
+      params(parameter),
       Block(
         Vector(
           LocalDeclaration(localValue, literal(0.0f)),

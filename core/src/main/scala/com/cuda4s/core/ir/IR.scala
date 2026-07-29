@@ -207,8 +207,10 @@ sealed trait KernelParam:
 
 final case class ScalarParam[T](
     name: String,
-    valueType: CudaType[T]
-) extends KernelParam:
+    valueType: CudaType[T],
+    span: SourceSpan = SourceSpan.Unknown
+) extends KernelParam,
+      Expr[T]:
   override type Value = T
 
 final case class BufferParam[T, Mode <: AccessMode](
@@ -218,9 +220,3 @@ final case class BufferParam[T, Mode <: AccessMode](
 ) extends KernelParam:
   override type Value = T
   def access: BufferAccess = accessMode.access
-
-final case class KernelIR(
-    name: String,
-    params: Vector[KernelParam],
-    body: Block
-)

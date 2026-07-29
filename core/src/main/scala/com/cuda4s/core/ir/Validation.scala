@@ -15,7 +15,9 @@ enum ValidationCode:
   case LoopIndexConflictsWithBinding
   case UnboundLoopIndex
   case UnknownBuffer
+  case UnknownScalarParameter
   case ExpectedBuffer
+  case ExpectedScalarParameter
   case BufferTypeMismatch
   case WriteToReadOnlyBuffer
   case ExpressionTypeMismatch
@@ -58,14 +60,17 @@ object KernelValidator:
     "blockDim.z" -> I32
   )
 
-  def validate(kernel: KernelIR): ValidationResult =
+  def validate(kernel: Kernel[?]): ValidationResult =
+    validate(kernel.ir)
+
+  def validate(kernel: KernelIR[?]): ValidationResult =
     val parameterErrors = validateParameters(kernel)
     val parametersByName = kernel.params.groupBy(_.name).view.mapValues(_.head).toMap
     val bodyErrors = validateBlock(kernel.body, parametersByName, "body")
 
     ValidationResult(parameterErrors ++ bodyErrors)
 
-  private def validateParameters(kernel: KernelIR): Vector[ValidationError] =
+  private def validateParameters(kernel: KernelIR[?]): Vector[ValidationError] =
     val kernelNameErrors =
       if isIdentifier(kernel.name) then Vector.empty
       else
@@ -276,6 +281,38 @@ object KernelValidator:
     expression match
       case _: Literal[?] =>
         Vector.empty
+
+      case scalar: ScalarParam[?] =>
+        parameters.get(scalar.name) match
+          case None =>
+            Vector(
+              ValidationError(
+                ValidationCode.UnknownScalarParameter,
+                s"scalar parameter '${scalar.name}' is not declared",
+                location,
+                scalar.span
+              )
+            )
+
+          case Some(_: BufferParam[?, ?]) =>
+            Vector(
+              ValidationError(
+                ValidationCode.ExpectedScalarParameter,
+                s"parameter '${scalar.name}' is a buffer, not a scalar",
+                location,
+                scalar.span
+              )
+            )
+
+          case Some(declared: ScalarParam[?]) =>
+            requireSameType(
+              scalar.valueType,
+              declared.valueType,
+              s"scalar parameter '${scalar.name}' has type ${scalar.valueType.cudaName}, " +
+                s"but was declared as ${declared.valueType.cudaName}",
+              location,
+              scalar.span
+            )
 
       case binary: Binary[?] =>
         validateExpression(binary.left, parameters, s"$location.left", scope) ++
