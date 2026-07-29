@@ -7,6 +7,13 @@ enum ValidationCode:
   case InvalidParameterName
   case DuplicateParameterName
   case InvalidLocalName
+  case DuplicateLocalName
+  case LocalNameConflictsWithBinding
+  case UnboundLocal
+  case LocalTypeMismatch
+  case InvalidLoopIndexName
+  case LoopIndexConflictsWithBinding
+  case UnboundLoopIndex
   case UnknownBuffer
   case ExpectedBuffer
   case BufferTypeMismatch
@@ -32,6 +39,12 @@ final case class ValidationResult(errors: Vector[ValidationError]):
     if isValid then Right(()) else Left(errors)
 
 object KernelValidator:
+  private final case class ValidationScope(
+      locals: Map[String, CudaType[?]] = Map.empty,
+      loopIndexes: Set[String] = Set.empty,
+      reductionIndexes: Set[String] = Set.empty
+  )
+
   private val cudaIdentifier = raw"[A-Za-z_][A-Za-z0-9_]*".r
   private val intrinsicTypes: Map[String, CudaType[?]] = Map(
     "threadIdx.x" -> I32,
@@ -93,21 +106,81 @@ object KernelValidator:
   private def validateBlock(
       block: Block,
       parameters: Map[String, KernelParam],
-      location: String
+      location: String,
+      initialScope: ValidationScope = ValidationScope()
   ): Vector[ValidationError] =
-    block.statements.zipWithIndex.flatMap { case (statement, index) =>
-      validateStatement(statement, parameters, s"$location.statements[$index]")
-    }
+    block.statements.zipWithIndex
+      .foldLeft((Vector.empty[ValidationError], initialScope)) {
+        case ((errors, scope), (declaration: LocalDeclaration[?], index)) =>
+          val statementLocation = s"$location.statements[$index]"
+          val nameErrors =
+            validateLocalName(declaration.local, parameters, scope, statementLocation)
+          val declarationErrors =
+            nameErrors ++
+              validateExpression(
+                declaration.initial,
+                parameters,
+                s"$statementLocation.initial",
+                scope
+              ) ++
+              requireSameType(
+                declaration.initial.valueType,
+                declaration.local.valueType,
+                "local initializer type does not match the declared local type",
+                s"$statementLocation.initial",
+                declaration.initial.span,
+                ValidationCode.LocalTypeMismatch
+              )
+          val nextScope =
+            if nameErrors.isEmpty then
+              scope.copy(
+                locals = scope.locals.updated(
+                  declaration.local.name,
+                  declaration.local.valueType
+                )
+              )
+            else scope
+
+          (errors ++ declarationErrors, nextScope)
+
+        case ((errors, scope), (statement, index)) =>
+          (
+            errors ++ validateStatement(
+              statement,
+              parameters,
+              s"$location.statements[$index]",
+              scope
+            ),
+            scope
+          )
+      }
+      ._1
 
   private def validateStatement(
       statement: Stmt,
       parameters: Map[String, KernelParam],
-      location: String
+      location: String,
+      scope: ValidationScope
   ): Vector[ValidationError] =
     statement match
+      case declaration: LocalDeclaration[?] =>
+        validateLocalName(declaration.local, parameters, scope, location) ++
+          validateExpression(
+            declaration.initial,
+            parameters,
+            s"$location.initial",
+            scope
+          )
+
       case store: Store[?, ?] =>
-        validatePlace(store.to, parameters, s"$location.to", isWrite = true) ++
-          validateExpression(store.value, parameters, s"$location.value") ++
+        validatePlace(
+          store.to,
+          parameters,
+          s"$location.to",
+          isWrite = true,
+          scope = scope
+        ) ++
+          validateExpression(store.value, parameters, s"$location.value", scope) ++
           requireSameType(
             store.to.valueType,
             store.value.valueType,
@@ -117,8 +190,42 @@ object KernelValidator:
             store.span
           )
 
+      case accumulation: Accumulate[?] =>
+        validatePlace(
+          accumulation.target,
+          parameters,
+          s"$location.target",
+          isWrite = true,
+          scope = scope
+        ) ++
+          validateExpression(
+            accumulation.value,
+            parameters,
+            s"$location.value",
+            scope
+          ) ++
+          requireSameType(
+            accumulation.target.valueType,
+            accumulation.value.valueType,
+            "accumulated value type does not match the local accumulator type",
+            s"$location.value",
+            accumulation.value.span
+          ) ++
+          requireSameType(
+            accumulation.addition,
+            accumulation.target.valueType,
+            "accumulation capability does not match the local accumulator type",
+            location,
+            accumulation.span
+          )
+
       case branch: IfThen =>
-        validateExpression(branch.condition, parameters, s"$location.condition") ++
+        validateExpression(
+          branch.condition,
+          parameters,
+          s"$location.condition",
+          scope
+        ) ++
           requireSameType(
             branch.condition.valueType,
             Bool,
@@ -126,8 +233,36 @@ object KernelValidator:
             s"$location.condition",
             branch.condition.span
           ) ++
-          validateBlock(branch.thenBlock, parameters, s"$location.then") ++
-          branch.elseBlock.toVector.flatMap(validateBlock(_, parameters, s"$location.else"))
+          validateBlock(branch.thenBlock, parameters, s"$location.then", scope) ++
+          branch.elseBlock.toVector.flatMap(
+            validateBlock(_, parameters, s"$location.else", scope)
+          )
+
+      case loop: ForLoop =>
+        val nameErrors =
+          validateLoopIndexName(loop.index, parameters, scope, s"$location.index")
+        val rangeErrors =
+          validateExpression(loop.from, parameters, s"$location.from", scope) ++
+            validateExpression(loop.until, parameters, s"$location.until", scope) ++
+            requireSameType(
+              loop.from.valueType,
+              I32,
+              "loop lower bound must have CUDA int type",
+              s"$location.from",
+              loop.from.span
+            ) ++
+            requireSameType(
+              loop.until.valueType,
+              I32,
+              "loop upper bound must have CUDA int type",
+              s"$location.until",
+              loop.until.span
+            )
+        val bodyScope =
+          scope.copy(loopIndexes = scope.loopIndexes + loop.index.name)
+
+        nameErrors ++ rangeErrors ++
+          validateBlock(loop.body, parameters, s"$location.body", bodyScope)
 
       case _: Barrier =>
         Vector.empty
@@ -136,15 +271,15 @@ object KernelValidator:
       expression: Expr[?],
       parameters: Map[String, KernelParam],
       location: String,
-      reductionIndexes: Set[String] = Set.empty
+      scope: ValidationScope = ValidationScope()
   ): Vector[ValidationError] =
     expression match
       case _: Literal[?] =>
         Vector.empty
 
       case binary: Binary[?] =>
-        validateExpression(binary.left, parameters, s"$location.left", reductionIndexes) ++
-          validateExpression(binary.right, parameters, s"$location.right", reductionIndexes) ++
+        validateExpression(binary.left, parameters, s"$location.left", scope) ++
+          validateExpression(binary.right, parameters, s"$location.right", scope) ++
           requireSameType(
             binary.left.valueType,
             binary.valueType,
@@ -165,13 +300,13 @@ object KernelValidator:
           comparison.left,
           parameters,
           s"$location.left",
-          reductionIndexes
+          scope
         ) ++
           validateExpression(
             comparison.right,
             parameters,
             s"$location.right",
-            reductionIndexes
+            scope
           ) ++
           requireSameType(
             comparison.left.valueType,
@@ -214,7 +349,7 @@ object KernelValidator:
           conversion.value,
           parameters,
           s"$location.value",
-          reductionIndexes
+          scope
         )
 
       case accumulation: ToAccumulator[?, ?] =>
@@ -222,7 +357,7 @@ object KernelValidator:
           accumulation.value,
           parameters,
           s"$location.value",
-          reductionIndexes
+          scope
         ) ++
           requireSameType(
             accumulation.value.valueType,
@@ -233,12 +368,24 @@ object KernelValidator:
           )
 
       case index: ReductionIndex =>
-        if reductionIndexes.contains(index.name) then Vector.empty
+        if scope.reductionIndexes.contains(index.name) then Vector.empty
         else
           Vector(
             ValidationError(
               ValidationCode.UnboundReductionIndex,
               s"reduction index '${index.name}' is used outside its reduction",
+              location,
+              index.span
+            )
+          )
+
+      case index: LoopIndex =>
+        if scope.loopIndexes.contains(index.name) then Vector.empty
+        else
+          Vector(
+            ValidationError(
+              ValidationCode.UnboundLoopIndex,
+              s"loop index '${index.name}' is used outside its loop",
               location,
               index.span
             )
@@ -256,11 +403,14 @@ object KernelValidator:
                  reduction.index.span
                )
              )) ++
-            (if reductionIndexes.contains(reduction.index.name) then
+            (if scope.reductionIndexes.contains(reduction.index.name) ||
+                scope.loopIndexes.contains(reduction.index.name) ||
+                scope.locals.contains(reduction.index.name)
+             then
                Vector(
                  ValidationError(
                    ValidationCode.DuplicateReductionIndex,
-                   s"reduction index '${reduction.index.name}' shadows an active index",
+                   s"reduction index '${reduction.index.name}' conflicts with an active binding",
                    s"$location.index",
                    reduction.index.span
                  )
@@ -282,13 +432,13 @@ object KernelValidator:
             reduction.from,
             parameters,
             s"$location.from",
-            reductionIndexes
+            scope
           ) ++
             validateExpression(
               reduction.until,
               parameters,
               s"$location.until",
-              reductionIndexes
+              scope
             ) ++
             requireSameType(
               reduction.from.valueType,
@@ -310,7 +460,7 @@ object KernelValidator:
             reduction.initial,
             parameters,
             s"$location.initial",
-            reductionIndexes
+            scope
           ) ++
             requireSameType(
               reduction.initial.valueType,
@@ -332,7 +482,10 @@ object KernelValidator:
             reduction.value,
             parameters,
             s"$location.value",
-            reductionIndexes + reduction.index.name
+            scope.copy(
+              reductionIndexes =
+                scope.reductionIndexes + reduction.index.name
+            )
           ) ++
             requireSameType(
               reduction.value.valueType,
@@ -350,7 +503,7 @@ object KernelValidator:
           parameters,
           s"$location.from",
           isWrite = false,
-          reductionIndexes = reductionIndexes
+          scope = scope
         )
 
   private def validatePlace(
@@ -358,7 +511,7 @@ object KernelValidator:
       parameters: Map[String, KernelParam],
       location: String,
       isWrite: Boolean,
-      reductionIndexes: Set[String] = Set.empty
+      scope: ValidationScope = ValidationScope()
   ): Vector[ValidationError] =
     place match
       case element: BufferElement[?, ?] =>
@@ -367,7 +520,7 @@ object KernelValidator:
             element.index,
             parameters,
             s"$location.index",
-            reductionIndexes
+            scope
           ) ++
             requireSameType(
               element.index.valueType,
@@ -422,16 +575,123 @@ object KernelValidator:
         indexErrors ++ declarationErrors
 
       case local: LocalVariable[?] =>
-        if isIdentifier(local.name) then Vector.empty
-        else
-          Vector(
-            ValidationError(
-              ValidationCode.InvalidLocalName,
-              s"'${local.name}' is not a valid CUDA local identifier",
-              location,
-              local.span
+        val nameErrors =
+          if isIdentifier(local.name) then Vector.empty
+          else
+            Vector(
+              ValidationError(
+                ValidationCode.InvalidLocalName,
+                s"'${local.name}' is not a valid CUDA local identifier",
+                location,
+                local.span
+              )
             )
+
+        val bindingErrors = scope.locals.get(local.name) match
+          case None =>
+            Vector(
+              ValidationError(
+                ValidationCode.UnboundLocal,
+                s"local '${local.name}' is used before declaration or outside its scope",
+                location,
+                local.span
+              )
+            )
+          case Some(declaredType) =>
+            requireSameType(
+              local.valueType,
+              declaredType,
+              s"local '${local.name}' has type ${local.valueType.cudaName}, " +
+                s"but was declared as ${declaredType.cudaName}",
+              location,
+              local.span,
+              ValidationCode.LocalTypeMismatch
+            )
+
+        nameErrors ++ bindingErrors
+
+  private def validateLocalName(
+      local: LocalVariable[?],
+      parameters: Map[String, KernelParam],
+      scope: ValidationScope,
+      location: String
+  ): Vector[ValidationError] =
+    val identifierErrors =
+      if isIdentifier(local.name) then Vector.empty
+      else
+        Vector(
+          ValidationError(
+            ValidationCode.InvalidLocalName,
+            s"'${local.name}' is not a valid CUDA local identifier",
+            s"$location.local",
+            local.span
           )
+        )
+
+    val duplicateErrors =
+      if scope.locals.contains(local.name) then
+        Vector(
+          ValidationError(
+            ValidationCode.DuplicateLocalName,
+            s"local '${local.name}' is already declared in an active scope",
+            s"$location.local",
+            local.span
+          )
+        )
+      else Vector.empty
+
+    val conflictErrors =
+      if parameters.contains(local.name) ||
+          scope.loopIndexes.contains(local.name) ||
+          scope.reductionIndexes.contains(local.name)
+      then
+        Vector(
+          ValidationError(
+            ValidationCode.LocalNameConflictsWithBinding,
+            s"local '${local.name}' conflicts with an active binding",
+            s"$location.local",
+            local.span
+          )
+        )
+      else Vector.empty
+
+    identifierErrors ++ duplicateErrors ++ conflictErrors
+
+  private def validateLoopIndexName(
+      index: LoopIndex,
+      parameters: Map[String, KernelParam],
+      scope: ValidationScope,
+      location: String
+  ): Vector[ValidationError] =
+    val identifierErrors =
+      if isIdentifier(index.name) then Vector.empty
+      else
+        Vector(
+          ValidationError(
+            ValidationCode.InvalidLoopIndexName,
+            s"'${index.name}' is not a valid CUDA loop index",
+            location,
+            index.span
+          )
+        )
+
+    val conflictErrors =
+      if parameters.contains(index.name) ||
+          scope.locals.contains(index.name) ||
+          scope.loopIndexes.contains(index.name) ||
+          scope.reductionIndexes.contains(index.name)
+      then
+        Vector(
+          ValidationError(
+            ValidationCode.LoopIndexConflictsWithBinding,
+            s"loop index '${index.name}' conflicts with an active binding",
+            location,
+            index.span
+          )
+        )
+      else Vector.empty
+
+    identifierErrors ++ conflictErrors
 
   private def requireSameType(
       actual: CudaType[?],

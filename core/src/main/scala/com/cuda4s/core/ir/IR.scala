@@ -86,6 +86,12 @@ final case class ReductionIndex(
 ) extends Expr[Int]:
   override val valueType: CudaType[Int] = I32
 
+final case class LoopIndex(
+    name: String,
+    span: SourceSpan = SourceSpan.Unknown
+) extends Expr[Int]:
+  override val valueType: CudaType[Int] = I32
+
 final case class ReduceSum[Input, Accumulator](
     index: ReductionIndex,
     from: Expr[Int],
@@ -153,9 +159,22 @@ final case class Load[
 sealed trait Stmt:
   def span: SourceSpan
 
+final case class LocalDeclaration[T](
+    local: LocalVariable[T],
+    initial: Expr[T],
+    span: SourceSpan = SourceSpan.Unknown
+) extends Stmt
+
 final case class Store[T, Space <: AddressSpace](
     to: Place[T, Space, ReadWrite],
     value: Expr[T],
+    span: SourceSpan = SourceSpan.Unknown
+) extends Stmt
+
+final case class Accumulate[T](
+    target: LocalVariable[T],
+    value: Expr[T],
+    addition: AdditiveType[T],
     span: SourceSpan = SourceSpan.Unknown
 ) extends Stmt
 
@@ -163,6 +182,14 @@ final case class IfThen(
     condition: Expr[Boolean],
     thenBlock: Block,
     elseBlock: Option[Block] = None,
+    span: SourceSpan = SourceSpan.Unknown
+) extends Stmt
+
+final case class ForLoop(
+    index: LoopIndex,
+    from: Expr[Int],
+    until: Expr[Int],
+    body: Block,
     span: SourceSpan = SourceSpan.Unknown
 ) extends Stmt
 

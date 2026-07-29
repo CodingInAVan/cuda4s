@@ -62,6 +62,32 @@ object CudaDsl:
       policy = policy
     )
 
+  def local[T](
+      name: String,
+      initial: Expr[T]
+  )(using valueType: CudaType[T], builder: BlockBuilder): LocalVariable[T] =
+    val variable = LocalVariable(name, valueType)
+    builder.append(LocalDeclaration(variable, initial))
+    variable
+
+  def accumulate[T](
+      target: LocalVariable[T],
+      value: Expr[T]
+  )(using addition: AdditiveType[T], builder: BlockBuilder): Unit =
+    builder.append(Accumulate(target, value, addition))
+
+  def gpuFor(
+      indexName: String,
+      from: Expr[Int],
+      until: Expr[Int]
+  )(
+      body: Expr[Int] => (BlockBuilder ?=> Unit)
+  )(using parent: BlockBuilder): Unit =
+    val index = LoopIndex(indexName)
+    val nested = BlockBuilder()
+    body(index)(using nested)
+    parent.append(ForLoop(index, from, until, nested.result()))
+
   def when(condition: Expr[Boolean])(
       body: BlockBuilder ?=> Unit
   )(using parent: BlockBuilder): Unit =

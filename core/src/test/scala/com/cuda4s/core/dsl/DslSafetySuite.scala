@@ -141,3 +141,45 @@ class DslSafetySuite extends FunSuite:
     )
 
     assert(errors.nonEmpty)
+
+  test("loop indices are expressions and cannot be assigned"):
+    val errors = typeCheckErrors(
+      """
+        import com.cuda4s.core.dsl.CudaDsl.*
+
+        kernel("invalidLoopIndex") {
+          gpuFor("i", literal(0), literal(8)) { index =>
+            index := literal(1)
+          }
+        }
+      """
+    )
+
+    assert(errors.nonEmpty)
+
+  test("local declarations require matching initializer types"):
+    val errors = typeCheckErrors(
+      """
+        import com.cuda4s.core.dsl.CudaDsl.*
+
+        kernel("invalidLocal") {
+          val invalid = local[Float]("value", literal(true))
+        }
+      """
+    )
+
+    assert(errors.nonEmpty)
+
+  test("only additive local types can use accumulate"):
+    val errors = typeCheckErrors(
+      """
+        import com.cuda4s.core.dsl.CudaDsl.*
+
+        kernel("invalidAccumulator") {
+          val flag = local("flag", literal(false))
+          accumulate(flag, literal(true))
+        }
+      """
+    )
+
+    assert(errors.nonEmpty)
