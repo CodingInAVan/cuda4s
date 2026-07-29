@@ -1,4 +1,4 @@
-package com.cuda4s.core.types
+package flight4s.core.types
 
 import munit.FunSuite
 

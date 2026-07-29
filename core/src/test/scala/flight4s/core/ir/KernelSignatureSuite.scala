@@ -1,11 +1,11 @@
-package com.cuda4s.core.ir
+package flight4s.core.ir
 
 import scala.compiletime.testing.typeCheckErrors
 
 import munit.FunSuite
 
-import com.cuda4s.core.dsl.CudaDsl.*
-import com.cuda4s.core.types.*
+import flight4s.core.dsl.CudaDsl.*
+import flight4s.core.types.*
 
 class KernelSignatureSuite extends FunSuite:
   test("a descriptor tuple derives bindings and launch argument types"):
@@ -79,7 +79,7 @@ class KernelSignatureSuite extends FunSuite:
   test("incorrect launch argument count fails to compile"):
     val errors = typeCheckErrors(
       """
-        import com.cuda4s.core.dsl.CudaDsl.*
+        import flight4s.core.dsl.CudaDsl.*
 
         val signature = params(value[Int]("size"), value[Float]("scale"))
         val definition = kernel("scale", signature) { _ => () }
@@ -92,7 +92,7 @@ class KernelSignatureSuite extends FunSuite:
   test("incorrect launch argument types fail to compile"):
     val errors = typeCheckErrors(
       """
-        import com.cuda4s.core.dsl.CudaDsl.*
+        import flight4s.core.dsl.CudaDsl.*
 
         val signature = params(value[Int]("size"), value[Float]("scale"))
         val definition = kernel("scale", signature) { _ => () }
@@ -105,8 +105,8 @@ class KernelSignatureSuite extends FunSuite:
   test("buffer element types remain part of the launch contract"):
     val errors = typeCheckErrors(
       """
-        import com.cuda4s.core.dsl.CudaDsl.*
-        import com.cuda4s.core.ir.DeviceBuffer
+        import flight4s.core.dsl.CudaDsl.*
+        import flight4s.core.ir.DeviceBuffer
 
         val signature = params(in[Float]("source"))
         val definition = kernel("copy", signature) { _ => () }

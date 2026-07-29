@@ -1,9 +1,9 @@
-package com.cuda4s.core.ir
+package flight4s.core.ir
 
 import munit.FunSuite
 
-import com.cuda4s.core.dsl.CudaDsl.*
-import com.cuda4s.core.types.*
+import flight4s.core.dsl.CudaDsl.*
+import flight4s.core.types.*
 
 class StructuredControlFlowSuite extends FunSuite:
   test("local accumulation inside a unit-stride GPU loop builds structured IR"):

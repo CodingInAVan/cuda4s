@@ -1,4 +1,4 @@
-package com.cuda4s.core.dsl
+package flight4s.core.dsl
 
 import scala.compiletime.testing.typeCheckErrors
 
@@ -8,7 +8,7 @@ class DslSafetySuite extends FunSuite:
   test("GPU conditions cannot be used as Scala Boolean values"):
     val errors = typeCheckErrors(
       """
-        import com.cuda4s.core.dsl.CudaDsl.*
+        import flight4s.core.dsl.CudaDsl.*
         val condition = threadIdx.x < literal(32)
         if condition then ()
       """
@@ -19,7 +19,7 @@ class DslSafetySuite extends FunSuite:
   test("read-only buffer elements cannot be assigned"):
     val errors = typeCheckErrors(
       """
-        import com.cuda4s.core.dsl.CudaDsl.*
+        import flight4s.core.dsl.CudaDsl.*
         val source = input[Float]("source")
         kernel("invalidWrite", params(source)) { bindings =>
           bindings.head(literal(0)) := literal(1.0f)
@@ -32,7 +32,7 @@ class DslSafetySuite extends FunSuite:
   test("GPU branches require GPU Boolean expressions"):
     val errors = typeCheckErrors(
       """
-        import com.cuda4s.core.dsl.CudaDsl.*
+        import flight4s.core.dsl.CudaDsl.*
         kernel("invalidCondition") {
           when(literal(1)) {}
         }
@@ -44,7 +44,7 @@ class DslSafetySuite extends FunSuite:
   test("floating-point remainder is rejected"):
     val errors = typeCheckErrors(
       """
-        import com.cuda4s.core.dsl.CudaDsl.*
+        import flight4s.core.dsl.CudaDsl.*
         val invalid = literal(1.0f) % literal(0.5f)
       """
     )
@@ -54,8 +54,8 @@ class DslSafetySuite extends FunSuite:
   test("F16 and BF16 support declared arithmetic capabilities"):
     val errors = typeCheckErrors(
       """
-        import com.cuda4s.core.dsl.CudaDsl.*
-        import com.cuda4s.core.types.*
+        import flight4s.core.dsl.CudaDsl.*
+        import flight4s.core.types.*
 
         val f16a = literal(Float16.fromBits(0.toShort))
         val f16b = literal(Float16.fromBits(0.toShort))
@@ -72,8 +72,8 @@ class DslSafetySuite extends FunSuite:
   test("FP8 generic arithmetic is rejected"):
     val errors = typeCheckErrors(
       """
-        import com.cuda4s.core.dsl.CudaDsl.*
-        import com.cuda4s.core.types.*
+        import flight4s.core.dsl.CudaDsl.*
+        import flight4s.core.types.*
 
         val left = literal(Float8E4M3.fromBits(0.toByte))
         val right = literal(Float8E4M3.fromBits(0.toByte))
@@ -86,7 +86,7 @@ class DslSafetySuite extends FunSuite:
   test("FP8 conversion is explicit and type checks"):
     val errors = typeCheckErrors(
       """
-        import com.cuda4s.core.dsl.CudaDsl.*
+        import flight4s.core.dsl.CudaDsl.*
 
         val narrowed = convert.f32ToFP8E4M3(literal(1.0f))
         val restored = convert.fp8E4M3ToF32(narrowed)
@@ -98,9 +98,9 @@ class DslSafetySuite extends FunSuite:
   test("low-precision values have declared accumulation types"):
     val errors = typeCheckErrors(
       """
-        import com.cuda4s.core.dsl.CudaDsl.*
-        import com.cuda4s.core.ir.Expr
-        import com.cuda4s.core.types.*
+        import flight4s.core.dsl.CudaDsl.*
+        import flight4s.core.ir.Expr
+        import flight4s.core.types.*
 
         val f16: Expr[Float] =
           literal(Float16.fromBits(0.toShort)).toAccumulator
@@ -116,7 +116,7 @@ class DslSafetySuite extends FunSuite:
   test("Boolean values cannot be accumulated"):
     val errors = typeCheckErrors(
       """
-        import com.cuda4s.core.dsl.CudaDsl.*
+        import flight4s.core.dsl.CudaDsl.*
         val invalid = literal(true).toAccumulator
       """
     )
@@ -126,9 +126,9 @@ class DslSafetySuite extends FunSuite:
   test("reduction initial values must use the declared accumulator type"):
     val errors = typeCheckErrors(
       """
-        import com.cuda4s.core.dsl.CudaDsl.*
-        import com.cuda4s.core.ir.Expr
-        import com.cuda4s.core.types.*
+        import flight4s.core.dsl.CudaDsl.*
+        import flight4s.core.ir.Expr
+        import flight4s.core.types.*
 
         val invalid: Expr[Float16] =
           reduceSum(
@@ -145,7 +145,7 @@ class DslSafetySuite extends FunSuite:
   test("loop indices are expressions and cannot be assigned"):
     val errors = typeCheckErrors(
       """
-        import com.cuda4s.core.dsl.CudaDsl.*
+        import flight4s.core.dsl.CudaDsl.*
 
         kernel("invalidLoopIndex") {
           gpuFor("i", literal(0), literal(8)) { index =>
@@ -160,7 +160,7 @@ class DslSafetySuite extends FunSuite:
   test("local declarations require matching initializer types"):
     val errors = typeCheckErrors(
       """
-        import com.cuda4s.core.dsl.CudaDsl.*
+        import flight4s.core.dsl.CudaDsl.*
 
         kernel("invalidLocal") {
           val invalid = local[Float]("value", literal(true))
@@ -173,7 +173,7 @@ class DslSafetySuite extends FunSuite:
   test("only additive local types can use accumulate"):
     val errors = typeCheckErrors(
       """
-        import com.cuda4s.core.dsl.CudaDsl.*
+        import flight4s.core.dsl.CudaDsl.*
 
         kernel("invalidAccumulator") {
           val flag = local("flag", literal(false))

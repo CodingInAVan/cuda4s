@@ -1,6 +1,6 @@
-package com.cuda4s.core.ir
+package flight4s.core.ir
 
-import com.cuda4s.core.types.{AccumulatorType, AdditiveType, CudaType, I32}
+import flight4s.core.types.{AccumulatorType, AdditiveType, CudaType, I32}
 
 enum BinaryOperator(val cudaToken: String):
   case Add extends BinaryOperator("+")
@@ -42,7 +42,7 @@ final case class Compare[T](
     operandType: CudaType[T],
     span: SourceSpan = SourceSpan.Unknown
 ) extends Expr[Boolean]:
-  override val valueType: CudaType[Boolean] = com.cuda4s.core.types.Bool
+  override val valueType: CudaType[Boolean] = flight4s.core.types.Bool
 
 final case class Intrinsic[T](
     name: String,

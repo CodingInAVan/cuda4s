@@ -1,9 +1,9 @@
-package com.cuda4s.core.dsl
+package flight4s.core.dsl
 
 import scala.collection.mutable.ArrayBuffer
 
-import com.cuda4s.core.ir.*
-import com.cuda4s.core.types.*
+import flight4s.core.ir.*
+import flight4s.core.types.*
 
 object CudaDsl:
   final class BlockBuilder private[dsl] ():
