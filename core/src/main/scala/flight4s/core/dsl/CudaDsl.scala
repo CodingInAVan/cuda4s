@@ -2,6 +2,7 @@ package flight4s.core.dsl
 
 import scala.collection.mutable.ArrayBuffer
 
+import flight4s.core.abi.ScalarAbi
 import flight4s.core.ir.*
 import flight4s.core.types.*
 
@@ -33,7 +34,10 @@ object CudaDsl:
   def inOut[T](name: String)(using valueType: CudaType[T]): BufferParam[T, ReadWrite] =
     BufferParam(name, valueType)
 
-  def value[T](name: String)(using valueType: CudaType[T]): ScalarParam[T] =
+  def value[T](name: String)(using
+      valueType: CudaType[T],
+      scalarAbi: ScalarAbi[T]
+  ): ScalarParam[T] =
     ScalarParam(name, valueType)
 
   def params()
@@ -48,7 +52,8 @@ object CudaDsl:
 
   def params[P1 <: KernelParam](
       p1: P1
-  ): KernelSignature[KernelArgumentOf[P1] *: EmptyTuple] {
+  )(using KernelParamAbi[P1])
+      : KernelSignature[KernelArgumentOf[P1] *: EmptyTuple] {
     type Bindings = P1 *: EmptyTuple
   } =
     KernelSignature.fromTuple(p1 *: EmptyTuple)
@@ -56,7 +61,10 @@ object CudaDsl:
   def params[P1 <: KernelParam, P2 <: KernelParam](
       p1: P1,
       p2: P2
-  ): KernelSignature[KernelArgumentOf[P1] *: KernelArgumentOf[P2] *: EmptyTuple] {
+  )(using KernelParamAbi[P1], KernelParamAbi[P2])
+      : KernelSignature[
+        KernelArgumentOf[P1] *: KernelArgumentOf[P2] *: EmptyTuple
+      ] {
     type Bindings = P1 *: P2 *: EmptyTuple
   } =
     KernelSignature.fromTuple(p1 *: p2 *: EmptyTuple)
@@ -65,7 +73,8 @@ object CudaDsl:
       p1: P1,
       p2: P2,
       p3: P3
-  ): KernelSignature[
+  )(using KernelParamAbi[P1], KernelParamAbi[P2], KernelParamAbi[P3])
+      : KernelSignature[
     KernelArgumentOf[P1] *: KernelArgumentOf[P2] *:
       KernelArgumentOf[P3] *: EmptyTuple
   ] {
@@ -83,6 +92,11 @@ object CudaDsl:
       p2: P2,
       p3: P3,
       p4: P4
+  )(using
+      KernelParamAbi[P1],
+      KernelParamAbi[P2],
+      KernelParamAbi[P3],
+      KernelParamAbi[P4]
   ): KernelSignature[
     KernelArgumentOf[P1] *: KernelArgumentOf[P2] *:
       KernelArgumentOf[P3] *: KernelArgumentOf[P4] *: EmptyTuple
@@ -103,6 +117,12 @@ object CudaDsl:
       p3: P3,
       p4: P4,
       p5: P5
+  )(using
+      KernelParamAbi[P1],
+      KernelParamAbi[P2],
+      KernelParamAbi[P3],
+      KernelParamAbi[P4],
+      KernelParamAbi[P5]
   ): KernelSignature[
     KernelArgumentOf[P1] *: KernelArgumentOf[P2] *:
       KernelArgumentOf[P3] *: KernelArgumentOf[P4] *:
@@ -126,6 +146,13 @@ object CudaDsl:
       p4: P4,
       p5: P5,
       p6: P6
+  )(using
+      KernelParamAbi[P1],
+      KernelParamAbi[P2],
+      KernelParamAbi[P3],
+      KernelParamAbi[P4],
+      KernelParamAbi[P5],
+      KernelParamAbi[P6]
   ): KernelSignature[
     KernelArgumentOf[P1] *: KernelArgumentOf[P2] *:
       KernelArgumentOf[P3] *: KernelArgumentOf[P4] *:

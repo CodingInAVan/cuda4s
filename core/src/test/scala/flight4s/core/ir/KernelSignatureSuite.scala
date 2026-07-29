@@ -110,7 +110,7 @@ class KernelSignatureSuite extends FunSuite:
 
         val signature = params(in[Float]("source"))
         val definition = kernel("copy", signature) { _ => () }
-        val wrongBuffer = new DeviceBuffer[Double] {}
+        def wrongBuffer: DeviceBuffer[Double] = ???
         val invalid = definition.bind(Tuple1(wrongBuffer))
       """
     )

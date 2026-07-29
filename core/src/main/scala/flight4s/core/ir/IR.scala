@@ -1,5 +1,6 @@
 package flight4s.core.ir
 
+import flight4s.core.abi.ScalarAbi
 import flight4s.core.types.{AccumulatorType, AdditiveType, CudaType, I32}
 
 enum BinaryOperator(val cudaToken: String):
@@ -209,9 +210,15 @@ final case class ScalarParam[T](
     name: String,
     valueType: CudaType[T],
     span: SourceSpan = SourceSpan.Unknown
+)(using val scalarAbi: ScalarAbi[T]
 ) extends KernelParam,
       Expr[T]:
   override type Value = T
+  require(
+    valueType.sizeBytes == scalarAbi.abiType.sizeBytes &&
+      valueType.alignmentBytes == scalarAbi.abiType.alignmentBytes,
+    s"$name has inconsistent CUDA type and ABI metadata"
+  )
 
 final case class BufferParam[T, Mode <: AccessMode](
     name: String,
