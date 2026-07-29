@@ -21,10 +21,12 @@ class TypedIrSuite extends FunSuite:
   test("explicit GPU control flow builds statements"):
     val result = output[Float]("result")
     val index = threadIdx.x
+    val signature = params(result)
 
-    val definition = kernel("writeResult", result) {
+    val definition = kernel("writeResult", signature) { bindings =>
+      val boundResult = bindings.head
       when(index < literal(32)) {
-        result(index) := literal(1.0f)
+        boundResult(index) := literal(1.0f)
         barrier()
       }
     }

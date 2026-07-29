@@ -36,8 +36,8 @@ class ReductionSuite extends FunSuite:
       reduceSum("i", literal(0), literal(64), literal(0.0f)) { index =>
         source(index).read
       }
-    val definition = kernel("sumValues", source, result) {
-      result(literal(0)) := sum
+    val definition = kernel("sumValues", params(source, result)) { bindings =>
+      bindings.tail.head(literal(0)) := sum
     }
 
     assert(KernelValidator.validate(definition).isValid)
@@ -45,8 +45,8 @@ class ReductionSuite extends FunSuite:
   test("an unbound reduction index is rejected"):
     val result = output[Float]("result")
     val index = ReductionIndex("i")
-    val definition = kernel("unboundIndex", result) {
-      result(index) := literal(1.0f)
+    val definition = kernel("unboundIndex", params(result)) { bindings =>
+      bindings.head(index) := literal(1.0f)
     }
 
     val codes = KernelValidator.validate(definition).errors.map(_.code)
@@ -61,8 +61,8 @@ class ReductionSuite extends FunSuite:
           literal(1.0f)
         }
       }
-    val definition = kernel("shadowedIndex", result) {
-      result(literal(0)) := nested
+    val definition = kernel("shadowedIndex", params(result)) { bindings =>
+      bindings.head(literal(0)) := nested
     }
 
     val codes = KernelValidator.validate(definition).errors.map(_.code)
@@ -76,8 +76,8 @@ class ReductionSuite extends FunSuite:
       reduceSum("i", literal(0), literal(4), literal(0.0f)) { index =>
         source(index).read
       }
-    val definition = kernel("conflictingIndex", source, result) {
-      result(literal(0)) := sum
+    val definition = kernel("conflictingIndex", params(source, result)) { bindings =>
+      bindings.tail.head(literal(0)) := sum
     }
 
     val codes = KernelValidator.validate(definition).errors.map(_.code)

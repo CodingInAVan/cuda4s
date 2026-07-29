@@ -10,9 +10,11 @@ class ValidationSuite extends FunSuite:
     val source = input[Float16]("source")
     val result = output[Float]("result")
     val index = threadIdx.x
-    val definition = kernel("promoteValues", source, result) {
+    val definition = kernel("promoteValues", params(source, result)) { bindings =>
+      val boundSource = bindings.head
+      val boundResult = bindings.tail.head
       when(index < literal(32)) {
-        result(index) := source(index).read.toAccumulator
+        boundResult(index) := boundSource(index).read.toAccumulator
       }
     }
 
@@ -23,7 +25,8 @@ class ValidationSuite extends FunSuite:
   test("kernel and parameter names must be unique CUDA identifiers"):
     val first = input[Float]("source-value")
     val second = output[Float]("source-value")
-    val definition = KernelIR("invalid kernel", Vector(first, second), Block(Vector.empty))
+    val definition =
+      KernelIR("invalid kernel", params(first, second), Block(Vector.empty))
 
     val codes = KernelValidator.validate(definition).errors.map(_.code)
 
@@ -39,7 +42,7 @@ class ValidationSuite extends FunSuite:
       BufferElement[Float, ReadWrite]("scale", literal(0), F32)
     val definition = KernelIR(
       "invalidReferences",
-      Vector(scalar),
+      params(scalar),
       Block(
         Vector(
           Store(unknownTarget, literal(1.0f)),
@@ -61,7 +64,7 @@ class ValidationSuite extends FunSuite:
       BufferElement[Int, ReadWrite]("source", literal(1), I32)
     val definition = KernelIR(
       "forgedAccess",
-      Vector(readOnly),
+      params(readOnly),
       Block(
         Vector(
           Store(forgedWrite, literal(1.0f)),
@@ -76,9 +79,10 @@ class ValidationSuite extends FunSuite:
     assert(codes.contains(ValidationCode.BufferTypeMismatch))
 
   test("validation result exposes an Either boundary"):
-    val valid = KernelValidator.validate(KernelIR("empty", Vector.empty, Block(Vector.empty)))
+    val valid =
+      KernelValidator.validate(KernelIR("empty", params(), Block(Vector.empty)))
     val invalid =
-      KernelValidator.validate(KernelIR("not valid", Vector.empty, Block(Vector.empty)))
+      KernelValidator.validate(KernelIR("not valid", params(), Block(Vector.empty)))
 
     assertEquals(valid.toEither, Right(()))
     assert(invalid.toEither.isLeft)
@@ -86,8 +90,8 @@ class ValidationSuite extends FunSuite:
   test("only declared CUDA intrinsics are accepted"):
     val result = output[Float]("result")
     val unknownIndex = Intrinsic("warpIdx.x", I32)
-    val definition = kernel("unknownIntrinsic", result) {
-      result(unknownIndex) := literal(1.0f)
+    val definition = kernel("unknownIntrinsic", params(result)) { bindings =>
+      bindings.head(unknownIndex) := literal(1.0f)
     }
 
     val codes = KernelValidator.validate(definition).errors.map(_.code)

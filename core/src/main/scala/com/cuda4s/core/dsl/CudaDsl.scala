@@ -21,8 +21,14 @@ object CudaDsl:
   def input[T](name: String)(using valueType: CudaType[T]): BufferParam[T, ReadOnly] =
     BufferParam(name, valueType)
 
+  def in[T](name: String)(using valueType: CudaType[T]): BufferParam[T, ReadOnly] =
+    input(name)
+
   def output[T](name: String)(using valueType: CudaType[T]): BufferParam[T, ReadWrite] =
     BufferParam(name, valueType)
+
+  def out[T](name: String)(using valueType: CudaType[T]): BufferParam[T, ReadWrite] =
+    output(name)
 
   def inOut[T](name: String)(using valueType: CudaType[T]): BufferParam[T, ReadWrite] =
     BufferParam(name, valueType)
@@ -30,13 +36,126 @@ object CudaDsl:
   def value[T](name: String)(using valueType: CudaType[T]): ScalarParam[T] =
     ScalarParam(name, valueType)
 
-  def kernel(
+  def params()
+      : KernelSignature[EmptyTuple] { type Bindings = EmptyTuple } =
+    KernelSignature.fromTuple(EmptyTuple)
+
+  def params[Params <: Tuple](
+      bindings: Params
+  )(using tuple: KernelParamTuple[Params])
+      : KernelSignature[KernelArgumentsOf[Params]] { type Bindings = Params } =
+    KernelSignature.fromTuple(bindings)
+
+  def params[P1 <: KernelParam](
+      p1: P1
+  ): KernelSignature[KernelArgumentOf[P1] *: EmptyTuple] {
+    type Bindings = P1 *: EmptyTuple
+  } =
+    KernelSignature.fromTuple(p1 *: EmptyTuple)
+
+  def params[P1 <: KernelParam, P2 <: KernelParam](
+      p1: P1,
+      p2: P2
+  ): KernelSignature[KernelArgumentOf[P1] *: KernelArgumentOf[P2] *: EmptyTuple] {
+    type Bindings = P1 *: P2 *: EmptyTuple
+  } =
+    KernelSignature.fromTuple(p1 *: p2 *: EmptyTuple)
+
+  def params[P1 <: KernelParam, P2 <: KernelParam, P3 <: KernelParam](
+      p1: P1,
+      p2: P2,
+      p3: P3
+  ): KernelSignature[
+    KernelArgumentOf[P1] *: KernelArgumentOf[P2] *:
+      KernelArgumentOf[P3] *: EmptyTuple
+  ] {
+    type Bindings = P1 *: P2 *: P3 *: EmptyTuple
+  } =
+    KernelSignature.fromTuple(p1 *: p2 *: p3 *: EmptyTuple)
+
+  def params[
+      P1 <: KernelParam,
+      P2 <: KernelParam,
+      P3 <: KernelParam,
+      P4 <: KernelParam
+  ](
+      p1: P1,
+      p2: P2,
+      p3: P3,
+      p4: P4
+  ): KernelSignature[
+    KernelArgumentOf[P1] *: KernelArgumentOf[P2] *:
+      KernelArgumentOf[P3] *: KernelArgumentOf[P4] *: EmptyTuple
+  ] {
+    type Bindings = P1 *: P2 *: P3 *: P4 *: EmptyTuple
+  } =
+    KernelSignature.fromTuple(p1 *: p2 *: p3 *: p4 *: EmptyTuple)
+
+  def params[
+      P1 <: KernelParam,
+      P2 <: KernelParam,
+      P3 <: KernelParam,
+      P4 <: KernelParam,
+      P5 <: KernelParam
+  ](
+      p1: P1,
+      p2: P2,
+      p3: P3,
+      p4: P4,
+      p5: P5
+  ): KernelSignature[
+    KernelArgumentOf[P1] *: KernelArgumentOf[P2] *:
+      KernelArgumentOf[P3] *: KernelArgumentOf[P4] *:
+      KernelArgumentOf[P5] *: EmptyTuple
+  ] {
+    type Bindings = P1 *: P2 *: P3 *: P4 *: P5 *: EmptyTuple
+  } =
+    KernelSignature.fromTuple(p1 *: p2 *: p3 *: p4 *: p5 *: EmptyTuple)
+
+  def params[
+      P1 <: KernelParam,
+      P2 <: KernelParam,
+      P3 <: KernelParam,
+      P4 <: KernelParam,
+      P5 <: KernelParam,
+      P6 <: KernelParam
+  ](
+      p1: P1,
+      p2: P2,
+      p3: P3,
+      p4: P4,
+      p5: P5,
+      p6: P6
+  ): KernelSignature[
+    KernelArgumentOf[P1] *: KernelArgumentOf[P2] *:
+      KernelArgumentOf[P3] *: KernelArgumentOf[P4] *:
+      KernelArgumentOf[P5] *: KernelArgumentOf[P6] *: EmptyTuple
+  ] {
+    type Bindings = P1 *: P2 *: P3 *: P4 *: P5 *: P6 *: EmptyTuple
+  } =
+    KernelSignature.fromTuple(p1 *: p2 *: p3 *: p4 *: p5 *: p6 *: EmptyTuple)
+
+  def paramsTuple[Params <: Tuple](
+      bindings: Params
+  )(using tuple: KernelParamTuple[Params])
+      : KernelSignature[KernelArgumentsOf[Params]] { type Bindings = Params } =
+    params(bindings)
+
+  def kernel[Args <: Tuple](
       name: String,
-      params: KernelParam*
-  )(body: BlockBuilder ?=> Unit): KernelIR =
+      signature: KernelSignature[Args]
+  )(
+      body: signature.Bindings => (BlockBuilder ?=> Unit)
+  ): Kernel[Args] =
     val builder = BlockBuilder()
-    body(using builder)
-    KernelIR(name, params.toVector, builder.result())
+    body(signature.bindings)(using builder)
+    Kernel(KernelIR(name, signature, builder.result()))
+
+  def kernel(
+      name: String
+  )(body: BlockBuilder ?=> Unit): Kernel[EmptyTuple] =
+    val signature = params()
+    kernel(name, signature)(_ => body)
 
   def reduceSum[Input, Accumulator](
       indexName: String,

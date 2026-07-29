@@ -21,8 +21,8 @@ class DslSafetySuite extends FunSuite:
       """
         import com.cuda4s.core.dsl.CudaDsl.*
         val source = input[Float]("source")
-        kernel("invalidWrite", source) {
-          source(literal(0)) := literal(1.0f)
+        kernel("invalidWrite", params(source)) { bindings =>
+          bindings.head(literal(0)) := literal(1.0f)
         }
       """
     )
