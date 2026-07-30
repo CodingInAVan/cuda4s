@@ -124,7 +124,8 @@ object KernelSignature:
 final case class KernelIR[Args <: Tuple](
     name: String,
     signature: KernelSignature[Args],
-    body: Block
+    body: Block,
+    sharedMemory: Vector[SharedArray[?, ?]] = Vector.empty
 ):
   def params: Vector[KernelParam] = signature.parameters
 
@@ -133,6 +134,7 @@ final case class Kernel[Args <: Tuple](ir: KernelIR[Args]):
   def signature: KernelSignature[Args] = ir.signature
   def params: Vector[KernelParam] = ir.params
   def body: Block = ir.body
+  def sharedMemory: Vector[SharedArray[?, ?]] = ir.sharedMemory
 
   def bind(arguments: Args): KernelInvocation[Args] =
     KernelInvocation(this, arguments)

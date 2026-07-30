@@ -141,8 +141,29 @@ final case class BufferElement[T, Mode <: AccessMode](
     span: SourceSpan = SourceSpan.Unknown
 ) extends Place[T, Global, Mode]
 
+final case class ConstantElement[T](
+    arrayName: String,
+    index: Expr[Int],
+    valueType: CudaType[T],
+    span: SourceSpan = SourceSpan.Unknown
+) extends Place[T, Constant, ReadOnly]
+
+final case class SharedElement[T](
+    arrayName: String,
+    indices: Vector[Expr[Int]],
+    valueType: CudaType[T],
+    span: SourceSpan = SourceSpan.Unknown
+) extends Place[T, Shared, ReadWrite]
+
 final case class LocalVariable[T](
     name: String,
+    valueType: CudaType[T],
+    span: SourceSpan = SourceSpan.Unknown
+) extends Place[T, Local, ReadWrite]
+
+final case class LocalArrayElement[T](
+    arrayName: String,
+    index: Expr[Int],
     valueType: CudaType[T],
     span: SourceSpan = SourceSpan.Unknown
 ) extends Place[T, Local, ReadWrite]
@@ -160,31 +181,39 @@ final case class Load[
 sealed trait Stmt:
   def span: SourceSpan
 
+sealed trait ScopedDeclaration extends Stmt
+sealed trait ExecutableStmt extends Stmt
+
 final case class LocalDeclaration[T](
     local: LocalVariable[T],
     initial: Expr[T],
     span: SourceSpan = SourceSpan.Unknown
-) extends Stmt
+) extends ScopedDeclaration
+
+final case class LocalArrayDeclaration[T](
+    array: LocalArray[T],
+    span: SourceSpan = SourceSpan.Unknown
+) extends ScopedDeclaration
 
 final case class Store[T, Space <: AddressSpace](
     to: Place[T, Space, ReadWrite],
     value: Expr[T],
     span: SourceSpan = SourceSpan.Unknown
-) extends Stmt
+) extends ExecutableStmt
 
 final case class Accumulate[T](
     target: LocalVariable[T],
     value: Expr[T],
     addition: AdditiveType[T],
     span: SourceSpan = SourceSpan.Unknown
-) extends Stmt
+) extends ExecutableStmt
 
 final case class IfThen(
     condition: Expr[Boolean],
     thenBlock: Block,
     elseBlock: Option[Block] = None,
     span: SourceSpan = SourceSpan.Unknown
-) extends Stmt
+) extends ExecutableStmt
 
 final case class ForLoop(
     index: LoopIndex,
@@ -192,11 +221,11 @@ final case class ForLoop(
     until: Expr[Int],
     body: Block,
     span: SourceSpan = SourceSpan.Unknown
-) extends Stmt
+) extends ExecutableStmt
 
 final case class Barrier(
     span: SourceSpan = SourceSpan.Unknown
-) extends Stmt
+) extends ExecutableStmt
 
 final case class Block(statements: Vector[Stmt])
 
