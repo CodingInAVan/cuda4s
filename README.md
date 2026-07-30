@@ -37,8 +37,8 @@ Flight4s requires a JDK and sbt:
 sbt test
 ```
 
-The optional native CUDA launcher requires CMake, a C++17 compiler, JDK
-headers, and CUDA Toolkit 12 or newer:
+The optional native CUDA launcher requires CMake, a C++20 compiler (GCC 10+,
+Clang 10+, or Visual Studio 2022+), JDK headers, and CUDA Toolkit 12 or newer:
 
 ```shell
 cmake -S native -B native/build -DBUILD_TESTING=ON

@@ -23,7 +23,7 @@ add_library(
   STATIC
   src/launch_contract.cpp
 )
-target_compile_features(flight4s_launch_contract PUBLIC cxx_std_17)
+target_compile_features(flight4s_launch_contract PUBLIC cxx_std_20)
 target_include_directories(
   flight4s_launch_contract
   PUBLIC
@@ -41,7 +41,7 @@ add_library(
   src/cuda_launcher.cpp
   src/jni_cuda_launcher.cpp
 )
-target_compile_features(flight4s_cuda PRIVATE cxx_std_17)
+target_compile_features(flight4s_cuda PRIVATE cxx_std_20)
 target_include_directories(
   flight4s_cuda
   PRIVATE
@@ -95,7 +95,7 @@ if(BUILD_TESTING)
   target_compile_features(
     flight4s_launch_contract_tests
     PRIVATE
-    cxx_std_17
+    cxx_std_20
   )
   target_link_libraries(
     flight4s_launch_contract_tests
@@ -117,6 +117,7 @@ if(BUILD_TESTING)
       COMMAND
         "${CUDAToolkit_NVCC_EXECUTABLE}"
         --ptx
+        --std=c++20
         --gpu-architecture=compute_90
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_kernel.cu"
         --output-file
@@ -141,7 +142,7 @@ if(BUILD_TESTING)
     target_compile_features(
       flight4s_cuda_launch_integration_tests
       PRIVATE
-      cxx_std_17
+      cxx_std_20
     )
     target_include_directories(
       flight4s_cuda_launch_integration_tests
