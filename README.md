@@ -26,11 +26,19 @@ provides:
 - a JNI-facing launch request with reference metadata validation;
 - a C++ JNI launcher with native ABI validation and `void**` construction;
 - ordinary and clustered `cuLaunchKernelEx` execution without implicit sync;
-- structural validation independent of code generation.
+- structural validation independent of code generation;
+- validation-gated deterministic CUDA C++ source generation;
+- inspectable generated module and typed kernel artifacts with explicit C++20
+  compiler options;
+- CUDA declaration emission for constants, global parameters, static and
+  dynamic shared memory, and lexical local memory;
+- golden-source tests plus an optional `nvcc` compilation test.
 
-CUDA C++ generation, NVRTC integration, and public CUDA context, module,
-function, stream, and memory resource APIs are not implemented yet. The
-current native launcher is an internal foundation for those runtime objects.
+NVRTC integration and public CUDA context, module, function, stream, and memory
+resource APIs are not implemented yet. Source-map artifacts retain known IR
+spans, while automatic Scala source-position capture remains a later Scala 3
+macro iteration. The current native launcher is an internal foundation for the
+future runtime objects.
 
 ## Build
 
