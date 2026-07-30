@@ -10,7 +10,7 @@ ThisBuild / scmInfo := Some(
 )
 
 lazy val root = (project in file("."))
-  .aggregate(core)
+  .aggregate(core, runtime)
   .settings(
     name := "flight4s-root",
     publish / skip := true
@@ -19,5 +19,12 @@ lazy val root = (project in file("."))
 lazy val core = (project in file("core"))
   .settings(
     name := "flight4s-core",
+    libraryDependencies += "org.scalameta" %% "munit" % "1.0.0" % Test
+  )
+
+lazy val runtime = (project in file("runtime"))
+  .dependsOn(core)
+  .settings(
+    name := "flight4s-runtime",
     libraryDependencies += "org.scalameta" %% "munit" % "1.0.0" % Test
   )

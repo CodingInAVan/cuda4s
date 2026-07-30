@@ -11,7 +11,8 @@ proven.
 
 ## Status
 
-Flight4s is pre-alpha and under active design. The current core provides:
+Flight4s is pre-alpha and under active design. The current implementation
+provides:
 
 - CUDA scalar type witnesses, including F16, BF16, and FP8 formats;
 - typed expressions, places, statements, control flow, and reductions;
@@ -20,11 +21,13 @@ Flight4s is pre-alpha and under active design. The current core provides:
 - aligned direct launch storage with stable descriptor codes and slot offsets;
 - validated 1D, 2D, and 3D grid/block configuration with optional clusters;
 - a JNI-facing launch request with reference metadata validation;
+- a C++ JNI launcher with native ABI validation and `void**` construction;
+- ordinary and clustered `cuLaunchKernelEx` execution without implicit sync;
 - structural validation independent of code generation.
 
-CUDA C++ generation, native JNI validation and pointer-table construction,
-CUDA Driver launch, NVRTC integration, and GPU execution are not implemented
-yet.
+CUDA C++ generation, NVRTC integration, and public CUDA context, module,
+function, stream, and memory resource APIs are not implemented yet. The
+current native launcher is an internal foundation for those runtime objects.
 
 ## Build
 
@@ -33,6 +36,17 @@ Flight4s requires a JDK and sbt:
 ```shell
 sbt test
 ```
+
+The optional native CUDA launcher requires CMake, a C++17 compiler, JDK
+headers, and CUDA Toolkit 12 or newer:
+
+```shell
+cmake -S native -B native/build -DBUILD_TESTING=ON
+cmake --build native/build --config Release
+ctest --test-dir native/build -C Release --output-on-failure
+```
+
+See [native/README.md](native/README.md) for JNI and GPU integration tests.
 
 ## Coordinates
 
