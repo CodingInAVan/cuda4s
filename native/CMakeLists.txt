@@ -36,10 +36,34 @@ set_target_properties(
 )
 
 add_library(
+  flight4s_nvrtc_compiler
+  STATIC
+  src/nvrtc_compiler.cpp
+)
+target_compile_features(flight4s_nvrtc_compiler PUBLIC cxx_std_20)
+target_include_directories(
+  flight4s_nvrtc_compiler
+  PUBLIC
+  "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+target_link_libraries(
+  flight4s_nvrtc_compiler
+  PUBLIC
+  CUDA::nvrtc
+)
+set_target_properties(
+  flight4s_nvrtc_compiler
+  PROPERTIES
+  POSITION_INDEPENDENT_CODE ON
+)
+
+add_library(
   flight4s_cuda
   SHARED
   src/cuda_launcher.cpp
+  src/jni_environment.cpp
   src/jni_cuda_launcher.cpp
+  src/jni_nvrtc_compiler.cpp
 )
 target_compile_features(flight4s_cuda PRIVATE cxx_std_20)
 target_include_directories(
@@ -52,12 +76,19 @@ target_link_libraries(
   flight4s_cuda
   PRIVATE
   flight4s_launch_contract
+  flight4s_nvrtc_compiler
   CUDA::cuda_driver
 )
 
 if(MSVC)
   target_compile_options(
     flight4s_launch_contract
+    PRIVATE
+    /W4
+    /permissive-
+  )
+  target_compile_options(
+    flight4s_nvrtc_compiler
     PRIVATE
     /W4
     /permissive-
@@ -71,6 +102,13 @@ if(MSVC)
 else()
   target_compile_options(
     flight4s_launch_contract
+    PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+  )
+  target_compile_options(
+    flight4s_nvrtc_compiler
     PRIVATE
     -Wall
     -Wextra
@@ -105,6 +143,41 @@ if(BUILD_TESTING)
   add_test(
     NAME flight4s_launch_contract
     COMMAND flight4s_launch_contract_tests
+  )
+
+  add_executable(
+    flight4s_nvrtc_compiler_tests
+    tests/nvrtc_compiler_test.cpp
+  )
+  target_compile_features(
+    flight4s_nvrtc_compiler_tests
+    PRIVATE
+    cxx_std_20
+  )
+  target_link_libraries(
+    flight4s_nvrtc_compiler_tests
+    PRIVATE
+    flight4s_nvrtc_compiler
+  )
+  if(MSVC)
+    target_compile_options(
+      flight4s_nvrtc_compiler_tests
+      PRIVATE
+      /W4
+      /permissive-
+    )
+  else()
+    target_compile_options(
+      flight4s_nvrtc_compiler_tests
+      PRIVATE
+      -Wall
+      -Wextra
+      -Wpedantic
+    )
+  endif()
+  add_test(
+    NAME flight4s_nvrtc_compiler
+    COMMAND flight4s_nvrtc_compiler_tests
   )
 
   if(FLIGHT4S_BUILD_CUDA_INTEGRATION_TESTS)

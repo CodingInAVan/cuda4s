@@ -4,7 +4,8 @@
 
 namespace flight4s::cuda {
 
-CUresult launch_kernel(const CudaLaunchRequest& request) {
+CUresult CudaLauncher::launch(
+    const CudaLaunchRequest& request) const {
   if (request.function == nullptr) {
     throw std::invalid_argument("CUDA function handle must not be null");
   }

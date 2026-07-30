@@ -10,8 +10,16 @@ final case class CompilerOptions(
     additionalNvrtcOptions: Vector[String] = Vector.empty
 ):
   require(
-    additionalNvrtcOptions.forall(option => !option.startsWith("--std")),
-    "additional NVRTC options cannot override the CUDA C++ language standard"
+    additionalNvrtcOptions.forall { option =>
+      option.nonEmpty &&
+      !option.contains('\u0000') &&
+      !option.startsWith("--std") &&
+      !option.startsWith("-std") &&
+      !option.startsWith("--gpu-architecture") &&
+      !option.startsWith("-arch")
+    },
+    "additional NVRTC options must be non-empty, null-free, and cannot " +
+      "override the CUDA C++ standard or target"
   )
 
   def nvrtcOptions: Vector[String] =

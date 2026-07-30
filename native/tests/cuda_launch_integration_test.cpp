@@ -68,8 +68,9 @@ void launch_and_verify(
       descriptor_codes.size(),
   };
 
+  const flight4s::cuda::CudaLauncher launcher;
   check_cuda(
-      flight4s::cuda::launch_kernel(
+      launcher.launch(
           {function, nullptr, geometry, arguments}),
       uses_cluster ? "clustered cuLaunchKernelEx"
                    : "ordinary cuLaunchKernelEx");

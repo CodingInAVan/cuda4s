@@ -13,6 +13,10 @@ struct CudaLaunchRequest {
   ArgumentLayout arguments;
 };
 
-CUresult launch_kernel(const CudaLaunchRequest& request);
+class CudaLauncher final {
+ public:
+  [[nodiscard]] CUresult launch(
+      const CudaLaunchRequest& request) const;
+};
 
 }  // namespace flight4s::cuda

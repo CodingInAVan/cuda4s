@@ -30,15 +30,20 @@ provides:
 - validation-gated deterministic CUDA C++ source generation;
 - inspectable generated module and typed kernel artifacts with explicit C++20
   compiler options;
+- explicit compute-capability targets and ordered NVRTC option resolution;
+- native NVRTC compilation with inspectable PTX, compiler logs, compiler
+  version, target, and exact generated-source provenance;
+- structured NVRTC compilation failures that retain source, options, and logs;
 - CUDA declaration emission for constants, global parameters, static and
   dynamic shared memory, and lexical local memory;
-- golden-source tests plus an optional `nvcc` compilation test.
+- golden-source tests, native NVRTC contract tests, JNI integration tests, and
+  an optional `nvcc` compilation test.
 
-NVRTC integration and public CUDA context, module, function, stream, and memory
-resource APIs are not implemented yet. Source-map artifacts retain known IR
-spans, while automatic Scala source-position capture remains a later Scala 3
-macro iteration. The current native launcher is an internal foundation for the
-future runtime objects.
+Public CUDA context, module, function, stream, and memory resource APIs are not
+implemented yet. Source-map artifacts retain known IR spans, while automatic
+Scala source-position capture and NVRTC diagnostic remapping remain later
+Scala 3 macro/compiler iterations. The current native compiler and launcher are
+internal foundations for those future runtime objects.
 
 ## Build
 
