@@ -35,4 +35,9 @@ final class CudaNativeBindings {
       ByteBuffer argumentStorage,
       int[] argumentOffsets,
       byte[] argumentDescriptorCodes);
+
+  static native NativeNvrtcResult compileCuda(
+      byte[] sourceUtf8,
+      byte[] programNameUtf8,
+      byte[][] optionsUtf8);
 }

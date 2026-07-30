@@ -46,7 +46,7 @@ class CudaCodegenSuite extends FunSuite:
         |    output[index] = (left[index] + right[index]);
         |  }
         |}
-        |""".stripMargin
+        |""".stripMargin.replace("\r\n", "\n")
     )
     assertEquals(generated.name, "vectorAdd")
     assertEquals(generated.signature, definition.signature)
@@ -110,7 +110,7 @@ class CudaCodegenSuite extends FunSuite:
         |  __syncthreads();
         |  output[threadIdx.x] = dynamicTile[threadIdx.x];
         |}
-        |""".stripMargin
+        |""".stripMargin.replace("\r\n", "\n")
     )
     assertEquals(generated.kernels.map(_.name), Vector("memorySpaces"))
     assertEquals(generated.kernels.head.declarationLine, 3)
@@ -161,7 +161,7 @@ class CudaCodegenSuite extends FunSuite:
       """#include <cuda_bf16.h>
         |#include <cuda_fp16.h>
         |#include <cuda_fp8.h>
-        |""".stripMargin
+        |""".stripMargin.replace("\r\n", "\n")
     ))
     assert(source.contains("__float2half_rz(0x1.0p0f)"))
     assert(source.contains("__float2bfloat16_ru(0x1.0p0f)"))
@@ -311,6 +311,30 @@ class CudaCodegenSuite extends FunSuite:
     intercept[IllegalArgumentException](
       CompilerOptions(
         additionalNvrtcOptions = Vector("--std=c++17")
+      )
+    )
+    intercept[IllegalArgumentException](
+      CompilerOptions(
+        additionalNvrtcOptions = Vector("-std=c++17")
+      )
+    )
+    intercept[IllegalArgumentException](
+      CompilerOptions(
+        additionalNvrtcOptions =
+          Vector("--gpu-architecture=compute_80")
+      )
+    )
+    intercept[IllegalArgumentException](
+      CompilerOptions(
+        additionalNvrtcOptions = Vector("-arch=compute_80")
+      )
+    )
+    intercept[IllegalArgumentException](
+      CompilerOptions(additionalNvrtcOptions = Vector(""))
+    )
+    intercept[IllegalArgumentException](
+      CompilerOptions(
+        additionalNvrtcOptions = Vector("--define=bad\u0000value")
       )
     )
 
