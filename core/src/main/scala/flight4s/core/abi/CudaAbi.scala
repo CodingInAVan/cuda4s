@@ -20,6 +20,13 @@ enum CudaAbiType(
   case Float8E5M2 extends CudaAbiType(9, 1, 1)
   case DevicePointer64 extends CudaAbiType(10, 8, 8)
 
+object CudaAbiType:
+  private val byNativeCode: Map[Byte, CudaAbiType] =
+    values.map(abiType => abiType.nativeCode -> abiType).toMap
+
+  def fromNativeCode(nativeCode: Byte): Option[CudaAbiType] =
+    byNativeCode.get(nativeCode)
+
 final case class KernelArgumentAbi(
     name: String,
     abiType: CudaAbiType
