@@ -16,6 +16,9 @@ provides:
 
 - CUDA scalar type witnesses, including F16, BF16, and FP8 formats;
 - typed expressions, places, statements, control flow, and reductions;
+- distinct module constants, rank-aware kernel shared arrays, and lexical local
+  arrays;
+- module and kernel validation for memory ownership, scope, and access;
 - typed kernel signatures and compile-time-checked launch argument tuples;
 - ordered CUDA ABI descriptors and exact scalar/device-pointer byte encoding;
 - aligned direct launch storage with stable descriptor codes and slot offsets;

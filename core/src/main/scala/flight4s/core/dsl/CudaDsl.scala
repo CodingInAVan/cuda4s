@@ -7,14 +7,33 @@ import flight4s.core.ir.*
 import flight4s.core.types.*
 
 object CudaDsl:
-  final class BlockBuilder private[dsl] ():
+  final class BlockBuilder private[dsl] (
+      private val sharedDeclarations: Option[ArrayBuffer[SharedArray[?, ?]]]
+  ):
     private val statements = ArrayBuffer.empty[Stmt]
 
     private[dsl] def append(statement: Stmt): Unit =
       statements += statement
 
+    private[dsl] def declareShared(memory: SharedArray[?, ?]): Unit =
+      sharedDeclarations match
+        case Some(declarations) =>
+          declarations += memory
+        case None =>
+          throw DslError(
+            DslErrorCode.SharedMemoryDeclarationOutsideKernelBody,
+            "shared memory must be declared directly in a kernel body",
+            memory.span
+          )
+
+    private[dsl] def nested(): BlockBuilder =
+      BlockBuilder(None)
+
     private[dsl] def result(): Block =
       Block(statements.toVector)
+
+    private[dsl] def sharedMemory: Vector[SharedArray[?, ?]] =
+      sharedDeclarations.fold(Vector.empty)(_.toVector)
 
   def literal[T](value: T)(using valueType: CudaType[T]): Expr[T] =
     Literal(value, valueType)
@@ -174,9 +193,16 @@ object CudaDsl:
   )(
       body: signature.Bindings => (BlockBuilder ?=> Unit)
   ): Kernel[Args] =
-    val builder = BlockBuilder()
+    val builder = BlockBuilder(Some(ArrayBuffer.empty))
     body(signature.bindings)(using builder)
-    Kernel(KernelIR(name, signature, builder.result()))
+    Kernel(
+      KernelIR(
+        name,
+        signature,
+        builder.result(),
+        builder.sharedMemory
+      )
+    )
 
   def kernel(
       name: String
@@ -216,6 +242,97 @@ object CudaDsl:
     builder.append(LocalDeclaration(variable, initial))
     variable
 
+  def localArray[T](
+      name: String,
+      elementCount: Int
+  )(using valueType: CudaType[T], builder: BlockBuilder): LocalArray[T] =
+    val array = LocalArray(name, valueType, elementCount)
+    builder.append(LocalArrayDeclaration(array))
+    array
+
+  def sharedArray[T](
+      name: String,
+      elementCount: Int
+  )(using valueType: CudaType[T], builder: BlockBuilder): SharedArray[T, Rank1] =
+    val memory: SharedArray[T, Rank1] =
+      SharedArray(name, valueType, StaticSharedMemory(elementCount))
+    builder.declareShared(memory)
+    memory
+
+  def sharedArray2D[T](
+      name: String,
+      rows: Int,
+      columns: Int
+  )(using valueType: CudaType[T], builder: BlockBuilder): SharedArray[T, Rank2] =
+    sharedArray2D(name, rows, columns, columns)
+
+  def sharedArray2D[T](
+      name: String,
+      rows: Int,
+      columns: Int,
+      rowStride: Int
+  )(using valueType: CudaType[T], builder: BlockBuilder): SharedArray[T, Rank2] =
+    val memory: SharedArray[T, Rank2] =
+      SharedArray(
+        name,
+        valueType,
+        StaticSharedMemory.twoDimensional(rows, columns, rowStride)
+      )
+    builder.declareShared(memory)
+    memory
+
+  def dynamicSharedArray[T](
+      name: String
+  )(using valueType: CudaType[T], builder: BlockBuilder): SharedArray[T, Rank1] =
+    val memory: SharedArray[T, Rank1] =
+      SharedArray(name, valueType, DynamicSharedMemory)
+    builder.declareShared(memory)
+    memory
+
+  def sharedArray3D[T](
+      name: String,
+      depth: Int,
+      rows: Int,
+      columns: Int
+  )(using valueType: CudaType[T], builder: BlockBuilder): SharedArray[T, Rank3] =
+    sharedArray3D(name, depth, rows, columns, columns)
+
+  def sharedArray3D[T](
+      name: String,
+      depth: Int,
+      rows: Int,
+      columns: Int,
+      rowStride: Int
+  )(using valueType: CudaType[T], builder: BlockBuilder): SharedArray[T, Rank3] =
+    val memory: SharedArray[T, Rank3] =
+      SharedArray(
+        name,
+        valueType,
+        StaticSharedMemory.threeDimensional(
+          depth,
+          rows,
+          columns,
+          rowStride
+        )
+      )
+    builder.declareShared(memory)
+    memory
+
+  def constantArray[T](
+      name: String,
+      elementCount: Int
+  )(using valueType: CudaType[T]): ConstantArray[T] =
+    ConstantArray(name, valueType, elementCount)
+
+  def module(
+      constants: Iterable[ConstantArray[?]] = Vector.empty,
+      kernels: Iterable[Kernel[?]] = Vector.empty
+  ): CudaModuleIR =
+    CudaModuleIR(
+      constants.toVector,
+      kernels.iterator.map(_.ir).toVector
+    )
+
   def accumulate[T](
       target: LocalVariable[T],
       value: Expr[T]
@@ -230,14 +347,14 @@ object CudaDsl:
       body: Expr[Int] => (BlockBuilder ?=> Unit)
   )(using parent: BlockBuilder): Unit =
     val index = LoopIndex(indexName)
-    val nested = BlockBuilder()
+    val nested = parent.nested()
     body(index)(using nested)
     parent.append(ForLoop(index, from, until, nested.result()))
 
   def when(condition: Expr[Boolean])(
       body: BlockBuilder ?=> Unit
   )(using parent: BlockBuilder): Unit =
-    val nested = BlockBuilder()
+    val nested = parent.nested()
     body(using nested)
     parent.append(IfThen(condition, nested.result()))
 
@@ -246,9 +363,9 @@ object CudaDsl:
   )(
       elseBody: BlockBuilder ?=> Unit
   )(using parent: BlockBuilder): Unit =
-    val thenBuilder = BlockBuilder()
+    val thenBuilder = parent.nested()
     thenBody(using thenBuilder)
-    val elseBuilder = BlockBuilder()
+    val elseBuilder = parent.nested()
     elseBody(using elseBuilder)
     parent.append(
       IfThen(
@@ -393,6 +510,34 @@ object CudaDsl:
   extension [T, Mode <: AccessMode](buffer: BufferParam[T, Mode])
     def apply(index: Expr[Int]): BufferElement[T, Mode] =
       BufferElement(buffer.name, index, buffer.valueType)
+
+  extension [T](array: ConstantArray[T])
+    def apply(index: Expr[Int]): ConstantElement[T] =
+      ConstantElement(array.name, index, array.valueType)
+
+  extension [T](array: SharedArray[T, Rank1])
+    def apply(index: Expr[Int]): SharedElement[T] =
+      SharedElement(array.name, Vector(index), array.valueType)
+
+  extension [T](array: SharedArray[T, Rank2])
+    def apply(row: Expr[Int], column: Expr[Int]): SharedElement[T] =
+      SharedElement(array.name, Vector(row, column), array.valueType)
+
+  extension [T](array: SharedArray[T, Rank3])
+    def apply(
+        depth: Expr[Int],
+        row: Expr[Int],
+        column: Expr[Int]
+    ): SharedElement[T] =
+      SharedElement(
+        array.name,
+        Vector(depth, row, column),
+        array.valueType
+      )
+
+  extension [T](array: LocalArray[T])
+    def apply(index: Expr[Int]): LocalArrayElement[T] =
+      LocalArrayElement(array.name, index, array.valueType)
 
   extension [T, Space <: AddressSpace, Mode <: AccessMode](
       place: Place[T, Space, Mode]

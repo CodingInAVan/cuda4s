@@ -3,13 +3,29 @@ package flight4s.core.ir
 import flight4s.core.types.{Bool, CudaType, I32}
 
 enum ValidationCode:
+  case InvalidConstantName
+  case DuplicateConstantName
+  case InvalidConstantElementCount
+  case ConstantNameShadowed
+  case ModuleContextRequired
+  case DuplicateKernelName
+  case ModuleSymbolConflict
   case InvalidKernelName
   case InvalidParameterName
   case DuplicateParameterName
+  case InvalidSharedMemoryName
+  case DuplicateSharedMemoryName
+  case SharedMemoryNameConflictsWithParameter
+  case InvalidSharedMemoryElementCount
+  case InvalidSharedMemoryLayout
+  case MultipleDynamicSharedDeclarations
   case InvalidLocalName
   case DuplicateLocalName
   case LocalNameConflictsWithBinding
+  case InvalidLocalArrayElementCount
   case UnboundLocal
+  case UnknownLocalArray
+  case LocalArrayTypeMismatch
   case LocalTypeMismatch
   case InvalidLoopIndexName
   case LoopIndexConflictsWithBinding
@@ -20,6 +36,11 @@ enum ValidationCode:
   case ExpectedScalarParameter
   case BufferTypeMismatch
   case WriteToReadOnlyBuffer
+  case UnknownConstant
+  case ConstantTypeMismatch
+  case UnknownSharedMemory
+  case SharedMemoryTypeMismatch
+  case SharedMemoryIndexRankMismatch
   case ExpressionTypeMismatch
   case UnknownIntrinsic
   case InvalidReductionIndexName
@@ -41,10 +62,18 @@ final case class ValidationResult(errors: Vector[ValidationError]):
     if isValid then Right(()) else Left(errors)
 
 object KernelValidator:
+  private final case class LocalArrayDeclarationValidation(
+      errors: Vector[ValidationError],
+      bindingErrors: Vector[ValidationError]
+  )
+
   private final case class ValidationScope(
       locals: Map[String, CudaType[?]] = Map.empty,
+      localArrays: Map[String, LocalArray[?]] = Map.empty,
       loopIndexes: Set[String] = Set.empty,
-      reductionIndexes: Set[String] = Set.empty
+      reductionIndexes: Set[String] = Set.empty,
+      constants: Option[Map[String, ConstantArray[?]]] = None,
+      sharedMemory: Map[String, SharedArray[?, ?]] = Map.empty
   )
 
   private val cudaIdentifier = raw"[A-Za-z_][A-Za-z0-9_]*".r
@@ -64,13 +93,41 @@ object KernelValidator:
     validate(kernel.ir)
 
   def validate(kernel: KernelIR[?]): ValidationResult =
-    val parameterErrors = validateParameters(kernel)
+    validateKernel(kernel, None)
+
+  private[ir] def validateInModule(
+      kernel: KernelIR[?],
+      constants: Vector[ConstantArray[?]]
+  ): ValidationResult =
+    validateKernel(kernel, Some(constants))
+
+  private def validateKernel(
+      kernel: KernelIR[?],
+      constants: Option[Vector[ConstantArray[?]]]
+  ): ValidationResult =
+    val constantNames = constants.fold(Set.empty[String])(_.map(_.name).toSet)
+    val parameterErrors = validateParameters(kernel, constantNames)
+    val sharedMemoryErrors = validateSharedMemory(kernel, constantNames)
     val parametersByName = kernel.params.groupBy(_.name).view.mapValues(_.head).toMap
-    val bodyErrors = validateBlock(kernel.body, parametersByName, "body")
+    val bodyErrors = validateBlock(
+      kernel.body,
+      parametersByName,
+      "body",
+      ValidationScope(
+        constants = constants.map(
+          _.groupBy(_.name).view.mapValues(_.head).toMap
+        ),
+        sharedMemory =
+          kernel.sharedMemory.groupBy(_.name).view.mapValues(_.head).toMap
+      )
+    )
 
-    ValidationResult(parameterErrors ++ bodyErrors)
+    ValidationResult(parameterErrors ++ sharedMemoryErrors ++ bodyErrors)
 
-  private def validateParameters(kernel: KernelIR[?]): Vector[ValidationError] =
+  private def validateParameters(
+      kernel: KernelIR[?],
+      constantNames: Set[String]
+  ): Vector[ValidationError] =
     val kernelNameErrors =
       if isIdentifier(kernel.name) then Vector.empty
       else
@@ -106,7 +163,160 @@ object KernelValidator:
       .toVector
       .sortBy(_.message)
 
-    kernelNameErrors ++ nameErrors ++ duplicateErrors
+    val constantShadowErrors = kernel.params.zipWithIndex.flatMap {
+      case (parameter, index) =>
+        if constantNames.contains(parameter.name) then
+          Vector(
+            ValidationError(
+              ValidationCode.ConstantNameShadowed,
+              s"parameter '${parameter.name}' shadows a module constant",
+              s"params[$index]"
+            )
+          )
+        else Vector.empty
+    }
+
+    kernelNameErrors ++ nameErrors ++ duplicateErrors ++ constantShadowErrors
+
+  private def validateSharedMemory(
+      kernel: KernelIR[?],
+      constantNames: Set[String]
+  ): Vector[ValidationError] =
+    val parameterNames = kernel.params.map(_.name).toSet
+    val nameErrors = kernel.sharedMemory.zipWithIndex.flatMap {
+      case (memory, index) =>
+        val location = s"sharedMemory[$index]"
+        val identifierErrors =
+          if isIdentifier(memory.name) then Vector.empty
+          else
+            Vector(
+              ValidationError(
+                ValidationCode.InvalidSharedMemoryName,
+                s"'${memory.name}' is not a valid CUDA shared-memory identifier",
+                location,
+                memory.span
+              )
+            )
+        val parameterConflictErrors =
+          if parameterNames.contains(memory.name) then
+            Vector(
+              ValidationError(
+                ValidationCode.SharedMemoryNameConflictsWithParameter,
+                s"shared memory '${memory.name}' conflicts with a parameter",
+                location,
+                memory.span
+              )
+            )
+          else Vector.empty
+        val constantShadowErrors =
+          if constantNames.contains(memory.name) then
+            Vector(
+              ValidationError(
+                ValidationCode.ConstantNameShadowed,
+                s"shared memory '${memory.name}' shadows a module constant",
+                location,
+                memory.span
+              )
+            )
+          else Vector.empty
+        val sizeErrors = memory.size match
+          case static: StaticSharedMemory[?] =>
+            validateSharedMemoryLayout(
+              memory,
+              static.layout,
+              static.rank,
+              location
+            )
+          case DynamicSharedMemory =>
+            Vector.empty
+
+        identifierErrors ++
+          parameterConflictErrors ++
+          constantShadowErrors ++
+          sizeErrors
+    }
+
+    val duplicateErrors = kernel.sharedMemory
+      .groupBy(_.name)
+      .collect { case (name, declarations) if declarations.size > 1 =>
+        ValidationError(
+          ValidationCode.DuplicateSharedMemoryName,
+          s"shared memory '$name' is declared ${declarations.size} times",
+          "sharedMemory"
+        )
+      }
+      .toVector
+      .sortBy(_.message)
+
+    val dynamicDeclarations =
+      kernel.sharedMemory.count(_.size == DynamicSharedMemory)
+    val dynamicErrors =
+      if dynamicDeclarations <= 1 then Vector.empty
+      else
+        Vector(
+          ValidationError(
+            ValidationCode.MultipleDynamicSharedDeclarations,
+            s"a kernel may declare at most one dynamic shared array, found $dynamicDeclarations",
+            "sharedMemory"
+          )
+        )
+
+    nameErrors ++ duplicateErrors ++ dynamicErrors
+
+  private def validateSharedMemoryLayout(
+      memory: SharedArray[?, ?],
+      layout: MemoryLayout[?],
+      declaredRank: Int,
+      location: String
+  ): Vector[ValidationError] =
+    val positiveDimensionErrors =
+      if layout.logicalDimensions.forall(_ > 0) &&
+          layout.physicalDimensions.forall(_ > 0)
+      then Vector.empty
+      else
+        Vector(
+          ValidationError(
+            ValidationCode.InvalidSharedMemoryElementCount,
+            s"shared memory '${memory.name}' dimensions must be positive",
+            location,
+            memory.span
+          )
+        )
+
+    val supportedRank =
+      (layout.rank >= 1 && layout.rank <= 3) &&
+        layout.rank == declaredRank &&
+        declaredRank == memory.rankWitness.rank
+    val matchingRanks =
+      layout.logicalDimensions.size == layout.physicalDimensions.size
+    val physicalContainsLogical =
+      matchingRanks &&
+        layout.logicalDimensions
+          .zip(layout.physicalDimensions)
+          .forall { case (logical, physical) => physical >= logical }
+    val onlyInnermostDimensionIsPadded =
+      matchingRanks &&
+        layout.logicalDimensions.dropRight(1) ==
+          layout.physicalDimensions.dropRight(1)
+
+    val layoutErrors =
+      if supportedRank &&
+          matchingRanks &&
+          physicalContainsLogical &&
+          onlyInnermostDimensionIsPadded
+      then Vector.empty
+      else
+        Vector(
+          ValidationError(
+            ValidationCode.InvalidSharedMemoryLayout,
+            s"shared memory '${memory.name}' must have a supported row-major layout " +
+              "whose physical innermost dimension contains its logical dimension",
+            location,
+            memory.span
+          )
+        )
+
+    positiveDimensionErrors ++ layoutErrors
 
   private def validateBlock(
       block: Block,
@@ -148,7 +358,29 @@ object KernelValidator:
 
           (errors ++ declarationErrors, nextScope)
 
-        case ((errors, scope), (statement, index)) =>
+        case ((errors, scope), (declaration: LocalArrayDeclaration[?], index)) =>
+          val statementLocation = s"$location.statements[$index]"
+          val declarationValidation =
+            validateLocalArrayDeclaration(
+              declaration.array,
+              parameters,
+              scope,
+              statementLocation
+            )
+          val nextScope =
+            if declarationValidation.bindingErrors.isEmpty then
+              scope.copy(
+                localArrays =
+                  scope.localArrays.updated(
+                    declaration.array.name,
+                    declaration.array
+                  )
+              )
+            else scope
+
+          (errors ++ declarationValidation.errors, nextScope)
+
+        case ((errors, scope), (statement: ExecutableStmt, index)) =>
           (
             errors ++ validateStatement(
               statement,
@@ -162,21 +394,12 @@ object KernelValidator:
       ._1
 
   private def validateStatement(
-      statement: Stmt,
+      statement: ExecutableStmt,
       parameters: Map[String, KernelParam],
       location: String,
       scope: ValidationScope
   ): Vector[ValidationError] =
     statement match
-      case declaration: LocalDeclaration[?] =>
-        validateLocalName(declaration.local, parameters, scope, location) ++
-          validateExpression(
-            declaration.initial,
-            parameters,
-            s"$location.initial",
-            scope
-          )
-
       case store: Store[?, ?] =>
         validatePlace(
           store.to,
@@ -442,7 +665,9 @@ object KernelValidator:
              )) ++
             (if scope.reductionIndexes.contains(reduction.index.name) ||
                 scope.loopIndexes.contains(reduction.index.name) ||
-                scope.locals.contains(reduction.index.name)
+                scope.locals.contains(reduction.index.name) ||
+                scope.localArrays.contains(reduction.index.name) ||
+                scope.sharedMemory.contains(reduction.index.name)
              then
                Vector(
                  ValidationError(
@@ -458,6 +683,16 @@ object KernelValidator:
                  ValidationError(
                    ValidationCode.ReductionIndexConflictsWithParameter,
                    s"reduction index '${reduction.index.name}' conflicts with a parameter",
+                   s"$location.index",
+                   reduction.index.span
+                 )
+               )
+             else Vector.empty) ++
+            (if shadowsConstant(reduction.index.name, scope) then
+               Vector(
+                 ValidationError(
+                   ValidationCode.ConstantNameShadowed,
+                   s"reduction index '${reduction.index.name}' shadows a module constant",
                    s"$location.index",
                    reduction.index.span
                  )
@@ -611,6 +846,118 @@ object KernelValidator:
 
         indexErrors ++ declarationErrors
 
+      case element: ConstantElement[?] =>
+        val indexErrors =
+          validateArrayIndex(element.index, parameters, s"$location.index", scope)
+        val declarationErrors = scope.constants match
+          case None =>
+            Vector(
+              ValidationError(
+                ValidationCode.ModuleContextRequired,
+                s"constant array '${element.arrayName}' requires module validation",
+                location,
+                element.span
+              )
+            )
+          case Some(constants) =>
+            constants.get(element.arrayName) match
+              case None =>
+                Vector(
+                  ValidationError(
+                    ValidationCode.UnknownConstant,
+                    s"constant array '${element.arrayName}' is not declared by the module",
+                    location,
+                    element.span
+                  )
+                )
+              case Some(constant) =>
+                requireSameType(
+                  element.valueType,
+                  constant.valueType,
+                  s"constant element type ${element.valueType.cudaName} does not match " +
+                    s"symbol type ${constant.valueType.cudaName}",
+                  location,
+                  element.span,
+                  ValidationCode.ConstantTypeMismatch
+                )
+
+        indexErrors ++ declarationErrors
+
+      case element: SharedElement[?] =>
+        val indexErrors = element.indices.zipWithIndex.flatMap {
+          case (index, indexPosition) =>
+            validateArrayIndex(
+              index,
+              parameters,
+              s"$location.indices[$indexPosition]",
+              scope
+            )
+        }
+        val declarationErrors = scope.sharedMemory.get(element.arrayName) match
+          case None =>
+            Vector(
+              ValidationError(
+                ValidationCode.UnknownSharedMemory,
+                s"shared array '${element.arrayName}' is not declared by the kernel",
+                location,
+                element.span
+              )
+            )
+          case Some(memory) =>
+            val typeErrors =
+              requireSameType(
+                element.valueType,
+                memory.valueType,
+                s"shared element type ${element.valueType.cudaName} does not match " +
+                  s"declaration type ${memory.valueType.cudaName}",
+                location,
+                element.span,
+                ValidationCode.SharedMemoryTypeMismatch
+              )
+            val expectedRank = memory.rankWitness.rank
+            val rankErrors =
+              if element.indices.size == expectedRank then Vector.empty
+              else
+                Vector(
+                  ValidationError(
+                    ValidationCode.SharedMemoryIndexRankMismatch,
+                    s"shared array '${element.arrayName}' requires $expectedRank indices, " +
+                      s"found ${element.indices.size}",
+                    location,
+                    element.span
+                  )
+                )
+
+            typeErrors ++ rankErrors
+
+        indexErrors ++ declarationErrors
+
+      case element: LocalArrayElement[?] =>
+        val indexErrors =
+          validateArrayIndex(element.index, parameters, s"$location.index", scope)
+        val declarationErrors = scope.localArrays.get(element.arrayName) match
+          case None =>
+            Vector(
+              ValidationError(
+                ValidationCode.UnknownLocalArray,
+                s"local array '${element.arrayName}' is used before declaration or outside its scope",
+                location,
+                element.span
+              )
+            )
+          case Some(array) =>
+            requireSameType(
+              element.valueType,
+              array.valueType,
+              s"local array element type ${element.valueType.cudaName} does not match " +
+                s"declaration type ${array.valueType.cudaName}",
+              location,
+              element.span,
+              ValidationCode.LocalArrayTypeMismatch
+            )
+
+        indexErrors ++ declarationErrors
+
       case local: LocalVariable[?] =>
         val nameErrors =
           if isIdentifier(local.name) then Vector.empty
@@ -647,6 +994,21 @@ object KernelValidator:
 
         nameErrors ++ bindingErrors
 
+  private def validateArrayIndex(
+      index: Expr[Int],
+      parameters: Map[String, KernelParam],
+      location: String,
+      scope: ValidationScope
+  ): Vector[ValidationError] =
+    validateExpression(index, parameters, location, scope) ++
+      requireSameType(
+        index.valueType,
+        I32,
+        "array index must have CUDA int type",
+        location,
+        index.span
+      )
+
   private def validateLocalName(
       local: LocalVariable[?],
       parameters: Map[String, KernelParam],
@@ -666,7 +1028,9 @@ object KernelValidator:
         )
 
     val duplicateErrors =
-      if scope.locals.contains(local.name) then
+      if scope.locals.contains(local.name) ||
+          scope.localArrays.contains(local.name)
+      then
         Vector(
           ValidationError(
             ValidationCode.DuplicateLocalName,
@@ -679,6 +1043,7 @@ object KernelValidator:
 
     val conflictErrors =
       if parameters.contains(local.name) ||
+          scope.sharedMemory.contains(local.name) ||
           scope.loopIndexes.contains(local.name) ||
           scope.reductionIndexes.contains(local.name)
       then
@@ -692,7 +1057,105 @@ object KernelValidator:
         )
       else Vector.empty
 
-    identifierErrors ++ duplicateErrors ++ conflictErrors
+    val constantShadowErrors =
+      if shadowsConstant(local.name, scope) then
+        Vector(
+          ValidationError(
+            ValidationCode.ConstantNameShadowed,
+            s"local '${local.name}' shadows a module constant",
+            s"$location.local",
+            local.span
+          )
+        )
+      else Vector.empty
+
+    identifierErrors ++
+      duplicateErrors ++
+      conflictErrors ++
+      constantShadowErrors
+
+  private def validateLocalArrayDeclaration(
+      array: LocalArray[?],
+      parameters: Map[String, KernelParam],
+      scope: ValidationScope,
+      location: String
+  ): LocalArrayDeclarationValidation =
+    val identifierErrors =
+      if isIdentifier(array.name) then Vector.empty
+      else
+        Vector(
+          ValidationError(
+            ValidationCode.InvalidLocalName,
+            s"'${array.name}' is not a valid CUDA local-array identifier",
+            s"$location.array",
+            array.span
+          )
+        )
+
+    val duplicateErrors =
+      if scope.locals.contains(array.name) ||
+          scope.localArrays.contains(array.name)
+      then
+        Vector(
+          ValidationError(
+            ValidationCode.DuplicateLocalName,
+            s"local binding '${array.name}' is already declared in an active scope",
+            s"$location.array",
+            array.span
+          )
+        )
+      else Vector.empty
+
+    val conflictErrors =
+      if parameters.contains(array.name) ||
+          scope.sharedMemory.contains(array.name) ||
+          scope.loopIndexes.contains(array.name) ||
+          scope.reductionIndexes.contains(array.name)
+      then
+        Vector(
+          ValidationError(
+            ValidationCode.LocalNameConflictsWithBinding,
+            s"local array '${array.name}' conflicts with an active binding",
+            s"$location.array",
+            array.span
+          )
+        )
+      else Vector.empty
+
+    val sizeErrors =
+      if array.elementCount > 0 then Vector.empty
+      else
+        Vector(
+          ValidationError(
+            ValidationCode.InvalidLocalArrayElementCount,
+            s"local array '${array.name}' must have a positive element count",
+            s"$location.array",
+            array.span
+          )
+        )
+
+    val constantShadowErrors =
+      if shadowsConstant(array.name, scope) then
+        Vector(
+          ValidationError(
+            ValidationCode.ConstantNameShadowed,
+            s"local array '${array.name}' shadows a module constant",
+            s"$location.array",
+            array.span
+          )
+        )
+      else Vector.empty
+
+    val bindingErrors =
+      identifierErrors ++
+        duplicateErrors ++
+        conflictErrors ++
+        constantShadowErrors
+
+    LocalArrayDeclarationValidation(
+      errors = bindingErrors ++ sizeErrors,
+      bindingErrors = bindingErrors
+    )
 
   private def validateLoopIndexName(
       index: LoopIndex,
@@ -715,6 +1178,8 @@ object KernelValidator:
     val conflictErrors =
       if parameters.contains(index.name) ||
           scope.locals.contains(index.name) ||
+          scope.localArrays.contains(index.name) ||
+          scope.sharedMemory.contains(index.name) ||
           scope.loopIndexes.contains(index.name) ||
           scope.reductionIndexes.contains(index.name)
       then
@@ -728,7 +1193,25 @@ object KernelValidator:
         )
       else Vector.empty
 
-    identifierErrors ++ conflictErrors
+    val constantShadowErrors =
+      if shadowsConstant(index.name, scope) then
+        Vector(
+          ValidationError(
+            ValidationCode.ConstantNameShadowed,
+            s"loop index '${index.name}' shadows a module constant",
+            location,
+            index.span
+          )
+        )
+      else Vector.empty
+
+    identifierErrors ++ conflictErrors ++ constantShadowErrors
+
+  private def shadowsConstant(
+      name: String,
+      scope: ValidationScope
+  ): Boolean =
+    scope.constants.exists(_.contains(name))
 
   private def requireSameType(
       actual: CudaType[?],
