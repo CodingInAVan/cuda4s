@@ -25,6 +25,7 @@ project/project/
 .vscode/
 
 ### Native build artifacts ###
+native/build/
 *.so
 *.o
 *.dylib
