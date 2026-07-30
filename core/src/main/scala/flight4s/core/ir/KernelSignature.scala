@@ -1,6 +1,7 @@
 package flight4s.core.ir
 
 import flight4s.core.abi.*
+import flight4s.core.launch.LaunchConfig
 
 trait DeviceBuffer[T]:
   private[flight4s] def deviceAddress: DeviceAddress
@@ -145,3 +146,8 @@ final case class KernelInvocation[Args <: Tuple](
 
   private[flight4s] def nativeArguments: NativeArgumentStorage =
     NativeArgumentStorage.materialize(packedArguments)
+
+  private[flight4s] def nativeLaunchRequest(
+      config: LaunchConfig
+  ): NativeLaunchRequest =
+    NativeLaunchRequest.materialize(config, nativeArguments)

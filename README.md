@@ -18,10 +18,13 @@ Flight4s is pre-alpha and under active design. The current core provides:
 - typed kernel signatures and compile-time-checked launch argument tuples;
 - ordered CUDA ABI descriptors and exact scalar/device-pointer byte encoding;
 - aligned direct launch storage with stable descriptor codes and slot offsets;
+- validated 1D, 2D, and 3D grid/block configuration with optional clusters;
+- a JNI-facing launch request with reference metadata validation;
 - structural validation independent of code generation.
 
-CUDA C++ generation, JNI pointer-table construction and launch, NVRTC
-integration, and GPU execution are not implemented yet.
+CUDA C++ generation, native JNI validation and pointer-table construction,
+CUDA Driver launch, NVRTC integration, and GPU execution are not implemented
+yet.
 
 ## Build
 
