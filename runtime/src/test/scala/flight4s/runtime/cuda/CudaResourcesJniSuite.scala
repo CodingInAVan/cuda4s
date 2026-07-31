@@ -97,6 +97,96 @@ class CudaResourcesJniSuite extends FunSuite:
     finally
       if context.isOpen then context.close()
 
+  test("typed vectorAdd executes through owned device buffers"):
+    assume(
+      nativeLibraryConfigured,
+      "set flight4s.cuda.native.path to run JNI tests"
+    )
+
+    val elementCount = 1024
+    val leftValues =
+      Array.tabulate(elementCount)(index => index.toFloat)
+    val rightValues =
+      Array.tabulate(elementCount)(index => (index * 2).toFloat)
+    val expected =
+      Array.tabulate(elementCount) { index =>
+        leftValues(index) + rightValues(index)
+      }
+
+    val leftParam = input[Float]("left")
+    val rightParam = input[Float]("right")
+    val outputParam = output[Float]("output")
+    val countParam = value[Int]("elementCount")
+    val definition = kernel(
+      "vectorAdd",
+      params(leftParam, rightParam, outputParam, countParam)
+    ) { bindings =>
+      val left = bindings.head
+      val right = bindings.tail.head
+      val output = bindings.tail.tail.head
+      val count = bindings.tail.tail.tail.head
+      val index = local(
+        "index",
+        blockIdx.x * blockDim.x + threadIdx.x
+      )
+      when(index.read < count) {
+        output(index.read) :=
+          left(index.read).read + right(index.read).read
+      }
+    }
+    val generatedKernel = CudaCodegen.generate(definition) match
+      case Right(value) => value
+      case Left(error) => fail(error.message)
+    val generatedModule = GeneratedCudaModule(
+      cudaSource = generatedKernel.cudaSource,
+      sourceMap = generatedKernel.sourceMap,
+      compilerOptions = generatedKernel.compilerOptions,
+      kernels = Vector(generatedKernel)
+    )
+
+    val context = openContext()
+    try
+      val artifact = NvrtcCompiler.compile(
+        generatedModule,
+        context.computeCapability,
+        "vector_add.cu"
+      ) match
+        case Right(value) => value
+        case Left(failure) =>
+          fail(failure.message + "\n" + failure.compileLog)
+      val module = context.load(artifact) match
+        case Right(value) => value
+        case Left(failure) => fail(failure.message)
+      val function = module.function(generatedKernel) match
+        case Right(value) => value
+        case Left(failure) => fail(failure.message)
+      val leftBuffer = context.allocate[Float](elementCount).toOption.get
+      val rightBuffer = context.allocate[Float](elementCount).toOption.get
+      val outputBuffer = context.allocate[Float](elementCount).toOption.get
+
+      assertEquals(leftBuffer.copyFrom(leftValues), Right(()))
+      assertEquals(rightBuffer.copyFrom(rightValues), Right(()))
+
+      val invocation = definition.bind(
+        (leftBuffer, rightBuffer, outputBuffer, elementCount)
+      )
+      function.launch(
+        invocation,
+        LaunchConfig(
+          grid = Grid.x(elementCount / 256),
+          block = LaunchBlock.x(256)
+        )
+      ) match
+        case Right(()) => ()
+        case Left(failure) => fail(failure.message)
+
+      val actual = outputBuffer.copyToArray() match
+        case Right(value) => value
+        case Left(failure) => fail(failure.message)
+      assertEquals(actual.toSeq, expected.toSeq)
+    finally
+      if context.isOpen then context.close()
+
   private def openContext(): CudaContext =
     CudaContext.open(0) match
       case Right(context) => context

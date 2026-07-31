@@ -60,4 +60,22 @@ final class CudaNativeBindings {
       long contextHandle,
       long moduleHandle,
       byte[] functionNameUtf8);
+
+  static native NativeCudaDriverResult allocateDeviceMemory(
+      long contextHandle,
+      long sizeBytes);
+
+  static native NativeCudaDriverResult freeDeviceMemory(
+      long contextHandle,
+      long deviceAddress);
+
+  static native NativeCudaDriverResult copyHostToDevice(
+      long contextHandle,
+      long deviceAddress,
+      ByteBuffer source);
+
+  static native NativeCudaDriverResult copyDeviceToHost(
+      long contextHandle,
+      long deviceAddress,
+      ByteBuffer destination);
 }

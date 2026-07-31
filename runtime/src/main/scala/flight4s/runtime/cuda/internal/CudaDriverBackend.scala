@@ -1,5 +1,6 @@
 package flight4s.runtime.cuda.internal
 
+import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 
 import flight4s.core.abi.NativeLaunchRequest
@@ -56,6 +57,28 @@ private[flight4s] trait CudaDriverBackend:
       functionHandle: Long,
       streamHandle: Long,
       request: NativeLaunchRequest
+  ): NativeCudaDriverStatus
+
+  def allocateDeviceMemory(
+      contextHandle: Long,
+      sizeBytes: Long
+  ): NativeCudaResourceResult
+
+  def freeDeviceMemory(
+      contextHandle: Long,
+      deviceAddress: Long
+  ): NativeCudaDriverStatus
+
+  def copyHostToDevice(
+      contextHandle: Long,
+      deviceAddress: Long,
+      source: ByteBuffer
+  ): NativeCudaDriverStatus
+
+  def copyDeviceToHost(
+      contextHandle: Long,
+      deviceAddress: Long,
+      destination: ByteBuffer
   ): NativeCudaDriverStatus
 
 private[flight4s] object NativeCudaDriver extends CudaDriverBackend:
@@ -125,6 +148,54 @@ private[flight4s] object NativeCudaDriver extends CudaDriverBackend:
         functionHandle,
         streamHandle,
         request
+      )
+    )
+
+  override def allocateDeviceMemory(
+      contextHandle: Long,
+      sizeBytes: Long
+  ): NativeCudaResourceResult =
+    resource(
+      CudaNativeBindings.allocateDeviceMemory(
+        contextHandle,
+        sizeBytes
+      )
+    )
+
+  override def freeDeviceMemory(
+      contextHandle: Long,
+      deviceAddress: Long
+  ): NativeCudaDriverStatus =
+    status(
+      CudaNativeBindings.freeDeviceMemory(
+        contextHandle,
+        deviceAddress
+      )
+    )
+
+  override def copyHostToDevice(
+      contextHandle: Long,
+      deviceAddress: Long,
+      source: ByteBuffer
+  ): NativeCudaDriverStatus =
+    status(
+      CudaNativeBindings.copyHostToDevice(
+        contextHandle,
+        deviceAddress,
+        source
+      )
+    )
+
+  override def copyDeviceToHost(
+      contextHandle: Long,
+      deviceAddress: Long,
+      destination: ByteBuffer
+  ): NativeCudaDriverStatus =
+    status(
+      CudaNativeBindings.copyDeviceToHost(
+        contextHandle,
+        deviceAddress,
+        destination
       )
     )
 

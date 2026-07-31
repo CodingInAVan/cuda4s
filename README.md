@@ -36,7 +36,13 @@ provides:
 - structured NVRTC compilation failures that retain source, options, and logs;
 - public `CudaContext`, `CudaModule`, and typed `CudaFunction[Args]` resources;
 - retained CUDA primary contexts with compute-capability discovery;
-- deterministic context-owned module loading and `AutoCloseable` cleanup;
+- typed context-owned `CudaDeviceBuffer[T]` allocation and deterministic
+  `AutoCloseable` cleanup;
+- exact whole-buffer synchronous host/device copies through native-order direct
+  staging storage;
+- host codecs for every current scalar type, preserving raw F16, BF16, and FP8
+  representations;
+- reverse-creation-order cleanup across context-owned modules and buffers;
 - typed function resolution that preserves the generated kernel signature;
 - typed `CudaFunction.launch` submission from the original
   `KernelInvocation[Args]`;
@@ -45,14 +51,17 @@ provides:
 - structured CUDA Driver failures with PTX JIT information and error logs;
 - CUDA declaration emission for constants, global parameters, static and
   dynamic shared memory, and lexical local memory;
+- a generated, compiled, and executed typed `vectorAdd` integration test;
 - golden-source tests, native NVRTC contract tests, JNI integration tests, and
   an optional `nvcc` compilation test.
 
-Public stream and memory resource APIs are not implemented yet. Typed launches
-currently target CUDA's default stream and remain asynchronous; explicit stream
-ownership and synchronization are the next runtime slices. Source-map artifacts
-retain known IR spans, while automatic Scala source-position capture and NVRTC
-diagnostic remapping remain later Scala 3 macro/compiler iterations.
+Typed launches currently target CUDA's default stream and remain asynchronous.
+Device-buffer host copies are whole-buffer and synchronous, using pageable
+direct staging memory. Pinned host memory, partial and asynchronous copies,
+explicit stream ownership, events, and synchronization are the next runtime
+slices. Source-map artifacts retain known IR spans, while automatic Scala
+source-position capture and NVRTC diagnostic remapping remain later Scala 3
+macro/compiler iterations.
 
 ## Build
 

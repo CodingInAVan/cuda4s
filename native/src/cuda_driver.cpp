@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -39,6 +40,29 @@ void require_handle(const void* handle, const char* description) {
     throw std::invalid_argument(
         std::string(description) + " must not be null");
   }
+}
+
+void require_device_address(
+    CUdeviceptr address,
+    const char* description) {
+  if (address == 0) {
+    throw std::invalid_argument(
+        std::string(description) + " must not be null");
+  }
+}
+
+std::size_t checked_size(
+    std::uint64_t size_bytes,
+    const char* description) {
+  if (size_bytes == 0) {
+    throw std::invalid_argument(
+        std::string(description) + " must be positive");
+  }
+  if (size_bytes > std::numeric_limits<std::size_t>::max()) {
+    throw std::overflow_error(
+        std::string(description) + " exceeds the native size limit");
+  }
+  return static_cast<std::size_t>(size_bytes);
 }
 
 void require_c_string(
@@ -227,6 +251,82 @@ CudaFunctionResult CudaDriver::resolve_function(
       std::move(status),
       succeeded ? function : nullptr,
   };
+}
+
+CudaDeviceMemoryResult CudaDriver::allocate_device_memory(
+    CUcontext context,
+    std::uint64_t size_bytes) const {
+  require_handle(context, "CUDA context handle");
+  const auto native_size =
+      checked_size(size_bytes, "CUDA allocation size");
+
+  CurrentContextScope current(context);
+  if (current.push_result() != CUDA_SUCCESS) {
+    return {make_driver_status(current.push_result()), 0};
+  }
+
+  CUdeviceptr address = 0;
+  const auto allocation_result = cuMemAlloc(&address, native_size);
+  auto status =
+      finish_context_operation(allocation_result, current);
+  const bool succeeded = status.succeeded();
+  return {
+      std::move(status),
+      succeeded ? address : 0,
+  };
+}
+
+CudaDriverStatus CudaDriver::free_device_memory(
+    CUcontext context,
+    CUdeviceptr address) const {
+  require_handle(context, "CUDA context handle");
+  require_device_address(address, "CUDA device address");
+
+  CurrentContextScope current(context);
+  if (current.push_result() != CUDA_SUCCESS) {
+    return make_driver_status(current.push_result());
+  }
+  return finish_context_operation(cuMemFree(address), current);
+}
+
+CudaDriverStatus CudaDriver::copy_host_to_device(
+    CUcontext context,
+    CUdeviceptr destination,
+    const void* source,
+    std::uint64_t size_bytes) const {
+  require_handle(context, "CUDA context handle");
+  require_device_address(destination, "CUDA destination address");
+  require_handle(source, "host source address");
+  const auto native_size =
+      checked_size(size_bytes, "CUDA copy size");
+
+  CurrentContextScope current(context);
+  if (current.push_result() != CUDA_SUCCESS) {
+    return make_driver_status(current.push_result());
+  }
+  return finish_context_operation(
+      cuMemcpyHtoD(destination, source, native_size),
+      current);
+}
+
+CudaDriverStatus CudaDriver::copy_device_to_host(
+    CUcontext context,
+    void* destination,
+    CUdeviceptr source,
+    std::uint64_t size_bytes) const {
+  require_handle(context, "CUDA context handle");
+  require_handle(destination, "host destination address");
+  require_device_address(source, "CUDA source address");
+  const auto native_size =
+      checked_size(size_bytes, "CUDA copy size");
+
+  CurrentContextScope current(context);
+  if (current.push_result() != CUDA_SUCCESS) {
+    return make_driver_status(current.push_result());
+  }
+  return finish_context_operation(
+      cuMemcpyDtoH(destination, source, native_size),
+      current);
 }
 
 }  // namespace flight4s::cuda

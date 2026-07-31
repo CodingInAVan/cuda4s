@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "flight4s/cuda/cuda_driver.hpp"
+#include "jni_direct_buffer.hpp"
 #include "jni_cuda_result.hpp"
 #include "jni_environment.hpp"
 
@@ -23,6 +24,15 @@ template <typename Handle>
 jlong to_java_handle(Handle handle) {
   return static_cast<jlong>(
       reinterpret_cast<std::uintptr_t>(handle));
+}
+
+CUdeviceptr from_java_device_address(jlong address) {
+  return static_cast<CUdeviceptr>(
+      static_cast<std::uint64_t>(address));
+}
+
+jlong to_java_device_address(CUdeviceptr address) {
+  return static_cast<jlong>(address);
 }
 
 class CudaDriverJniAdapter final {
@@ -86,6 +96,68 @@ class CudaDriverJniAdapter final {
     return results_.driver_result(
         result.status,
         to_java_handle(result.function));
+  }
+
+  [[nodiscard]] jobject allocate_device_memory(
+      jlong context_handle,
+      jlong size_bytes) const {
+    if (size_bytes <= 0) {
+      throw std::invalid_argument(
+          "CUDA allocation size must be positive");
+    }
+    const auto result = driver_.allocate_device_memory(
+        from_java_handle<CUcontext>(context_handle),
+        static_cast<std::uint64_t>(size_bytes));
+    return results_.driver_result(
+        result.status,
+        to_java_device_address(result.address));
+  }
+
+  [[nodiscard]] jobject free_device_memory(
+      jlong context_handle,
+      jlong device_address) const {
+    const auto status = driver_.free_device_memory(
+        from_java_handle<CUcontext>(context_handle),
+        from_java_device_address(device_address));
+    return results_.driver_result(status);
+  }
+
+  [[nodiscard]] jobject copy_host_to_device(
+      jlong context_handle,
+      jlong device_address,
+      jobject source) const {
+    const auto view = flight4s::jni::DirectBufferView::require_exact(
+        environment_,
+        source,
+        "host copy source");
+    if (has_exception()) {
+      return nullptr;
+    }
+    const auto status = driver_.copy_host_to_device(
+        from_java_handle<CUcontext>(context_handle),
+        from_java_device_address(device_address),
+        view.data(),
+        static_cast<std::uint64_t>(view.size_bytes()));
+    return results_.driver_result(status);
+  }
+
+  [[nodiscard]] jobject copy_device_to_host(
+      jlong context_handle,
+      jlong device_address,
+      jobject destination) const {
+    const auto view = flight4s::jni::DirectBufferView::require_exact(
+        environment_,
+        destination,
+        "host copy destination");
+    if (has_exception()) {
+      return nullptr;
+    }
+    const auto status = driver_.copy_device_to_host(
+        from_java_handle<CUcontext>(context_handle),
+        view.data(),
+        from_java_device_address(device_address),
+        static_cast<std::uint64_t>(view.size_bytes()));
+    return results_.driver_result(status);
   }
 
  private:
@@ -213,6 +285,94 @@ Java_flight4s_runtime_cuda_internal_CudaNativeBindings_resolveFunction(
             context_handle,
             module_handle,
             function_name_utf8);
+  } catch (const std::invalid_argument& error) {
+    jni.throw_illegal_argument(error.what());
+  } catch (const std::bad_alloc& error) {
+    jni.throw_out_of_memory(error.what());
+  } catch (const std::exception& error) {
+    jni.throw_runtime_exception(error.what());
+  }
+  return nullptr;
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_flight4s_runtime_cuda_internal_CudaNativeBindings_allocateDeviceMemory(
+    JNIEnv* environment,
+    jclass,
+    jlong context_handle,
+    jlong size_bytes) {
+  const flight4s::jni::JniEnvironment jni(environment);
+  try {
+    return CudaDriverJniAdapter(environment)
+        .allocate_device_memory(context_handle, size_bytes);
+  } catch (const std::invalid_argument& error) {
+    jni.throw_illegal_argument(error.what());
+  } catch (const std::bad_alloc& error) {
+    jni.throw_out_of_memory(error.what());
+  } catch (const std::exception& error) {
+    jni.throw_runtime_exception(error.what());
+  }
+  return nullptr;
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_flight4s_runtime_cuda_internal_CudaNativeBindings_freeDeviceMemory(
+    JNIEnv* environment,
+    jclass,
+    jlong context_handle,
+    jlong device_address) {
+  const flight4s::jni::JniEnvironment jni(environment);
+  try {
+    return CudaDriverJniAdapter(environment)
+        .free_device_memory(context_handle, device_address);
+  } catch (const std::invalid_argument& error) {
+    jni.throw_illegal_argument(error.what());
+  } catch (const std::bad_alloc& error) {
+    jni.throw_out_of_memory(error.what());
+  } catch (const std::exception& error) {
+    jni.throw_runtime_exception(error.what());
+  }
+  return nullptr;
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_flight4s_runtime_cuda_internal_CudaNativeBindings_copyHostToDevice(
+    JNIEnv* environment,
+    jclass,
+    jlong context_handle,
+    jlong device_address,
+    jobject source) {
+  const flight4s::jni::JniEnvironment jni(environment);
+  try {
+    return CudaDriverJniAdapter(environment)
+        .copy_host_to_device(
+            context_handle,
+            device_address,
+            source);
+  } catch (const std::invalid_argument& error) {
+    jni.throw_illegal_argument(error.what());
+  } catch (const std::bad_alloc& error) {
+    jni.throw_out_of_memory(error.what());
+  } catch (const std::exception& error) {
+    jni.throw_runtime_exception(error.what());
+  }
+  return nullptr;
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_flight4s_runtime_cuda_internal_CudaNativeBindings_copyDeviceToHost(
+    JNIEnv* environment,
+    jclass,
+    jlong context_handle,
+    jlong device_address,
+    jobject destination) {
+  const flight4s::jni::JniEnvironment jni(environment);
+  try {
+    return CudaDriverJniAdapter(environment)
+        .copy_device_to_host(
+            context_handle,
+            device_address,
+            destination);
   } catch (const std::invalid_argument& error) {
     jni.throw_illegal_argument(error.what());
   } catch (const std::bad_alloc& error) {

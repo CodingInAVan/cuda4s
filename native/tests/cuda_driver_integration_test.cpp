@@ -2,6 +2,7 @@
 
 #include <cuda.h>
 
+#include <array>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -46,6 +47,7 @@ int main(int argument_count, char** arguments) {
   const flight4s::cuda::CudaDriver driver;
   CUcontext context = nullptr;
   CUmodule module = nullptr;
+  CUdeviceptr memory = 0;
   bool retained = false;
 
   try {
@@ -67,6 +69,40 @@ int main(int argument_count, char** arguments) {
     if (context_result.compute_capability_major <= 0) {
       throw std::runtime_error(
           "invalid compute capability metadata");
+    }
+
+    const std::array<std::int32_t, 4> host_source{
+        11, 22, 33, 44};
+    std::array<std::int32_t, 4> host_destination{};
+    const auto memory_result = driver.allocate_device_memory(
+        context,
+        sizeof(host_source));
+    require_success(
+        memory_result.status,
+        "allocate device memory");
+    memory = memory_result.address;
+    if (memory == 0) {
+      throw std::runtime_error(
+          "successful device allocation returned null");
+    }
+
+    require_success(
+        driver.copy_host_to_device(
+            context,
+            memory,
+            host_source.data(),
+            sizeof(host_source)),
+        "copy host to device");
+    require_success(
+        driver.copy_device_to_host(
+            context,
+            host_destination.data(),
+            memory,
+            sizeof(host_destination)),
+        "copy device to host");
+    if (host_destination != host_source) {
+      throw std::runtime_error(
+          "device-memory copy round trip did not preserve bytes");
     }
 
     const auto module_result =
@@ -110,11 +146,19 @@ int main(int argument_count, char** arguments) {
         "unload module");
     module = nullptr;
     require_success(
+        driver.free_device_memory(context, memory),
+        "free device memory");
+    memory = 0;
+    require_success(
         driver.release_primary_context(0),
         "release primary context");
     retained = false;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
+    if (memory != 0 && context != nullptr) {
+      static_cast<void>(
+          driver.free_device_memory(context, memory));
+    }
     if (module != nullptr && context != nullptr) {
       static_cast<void>(driver.unload_module(context, module));
     }
