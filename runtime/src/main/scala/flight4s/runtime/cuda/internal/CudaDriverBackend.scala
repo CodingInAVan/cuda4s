@@ -59,6 +59,21 @@ private[flight4s] trait CudaDriverBackend:
       request: NativeLaunchRequest
   ): NativeCudaDriverStatus
 
+  def createStream(
+      contextHandle: Long,
+      flags: Int
+  ): NativeCudaResourceResult
+
+  def destroyStream(
+      contextHandle: Long,
+      streamHandle: Long
+  ): NativeCudaDriverStatus
+
+  def synchronizeStream(
+      contextHandle: Long,
+      streamHandle: Long
+  ): NativeCudaDriverStatus
+
   def allocateDeviceMemory(
       contextHandle: Long,
       sizeBytes: Long
@@ -148,6 +163,29 @@ private[flight4s] object NativeCudaDriver extends CudaDriverBackend:
         functionHandle,
         streamHandle,
         request
+      )
+    )
+
+  override def createStream(
+      contextHandle: Long,
+      flags: Int
+  ): NativeCudaResourceResult =
+    resource(CudaNativeBindings.createStream(contextHandle, flags))
+
+  override def destroyStream(
+      contextHandle: Long,
+      streamHandle: Long
+  ): NativeCudaDriverStatus =
+    status(CudaNativeBindings.destroyStream(contextHandle, streamHandle))
+
+  override def synchronizeStream(
+      contextHandle: Long,
+      streamHandle: Long
+  ): NativeCudaDriverStatus =
+    status(
+      CudaNativeBindings.synchronizeStream(
+        contextHandle,
+        streamHandle
       )
     )
 

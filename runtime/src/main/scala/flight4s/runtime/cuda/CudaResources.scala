@@ -55,10 +55,20 @@ object CudaLaunchFailure:
         s"$configuredBytes is incompatible with $elementSizeBytes-byte " +
         s"elements aligned to $elementAlignmentBytes bytes"
 
+  final case class StreamContextMismatch(
+      kernelName: String
+  ) extends CudaLaunchFailure:
+    override val message: String =
+      s"CUDA stream does not belong to the context for kernel $kernelName"
+
   final case class Driver(
       failure: CudaDriverFailure
   ) extends CudaLaunchFailure:
     override def message: String = failure.message
+
+enum CudaStreamMode(private[cuda] val nativeFlags: Int):
+  case Default extends CudaStreamMode(0)
+  case NonBlocking extends CudaStreamMode(1)
 
 final class CudaContext private (
     val deviceOrdinal: Int,
@@ -137,6 +147,34 @@ final class CudaContext private (
         )
     }
 
+  def createStream(
+      mode: CudaStreamMode = CudaStreamMode.NonBlocking
+  ): Either[CudaDriverFailure, CudaStream] =
+    lifecycleLock.synchronized {
+      requireOpen()
+      val result = backend.createStream(handle, mode.nativeFlags)
+      if result.status.succeeded then
+        require(
+          result.handle != 0L,
+          "successful CUDA stream creation returned a null handle"
+        )
+        val stream = new CudaStream(
+          context = this,
+          mode = mode,
+          handle = result.handle,
+          backend = backend
+        )
+        resources :+= stream
+        Right(stream)
+      else
+        Left(
+          CudaDriverFailure.fromStatus(
+            "CUDA stream creation",
+            result.status
+          )
+        )
+    }
+
   override def close(): Unit =
     lifecycleLock.synchronized {
       if !closed then
@@ -206,6 +244,64 @@ object CudaContext:
           result.status
         )
       )
+
+final class CudaStream private[cuda] (
+    val context: CudaContext,
+    val mode: CudaStreamMode,
+    private val handle: Long,
+    private val backend: CudaDriverBackend
+) extends AutoCloseable:
+  private var closed = false
+
+  def isOpen: Boolean =
+    context.synchronizedLifecycle(!closed && context.isOpen)
+
+  def synchronize(): Either[CudaDriverFailure, Unit] =
+    context.synchronizedLifecycle {
+      requireOpen()
+      val status = backend.synchronizeStream(
+        context.nativeHandle,
+        handle
+      )
+      if status.succeeded then Right(())
+      else
+        Left(
+          CudaDriverFailure.fromStatus(
+            "CUDA stream synchronization",
+            status
+          )
+        )
+    }
+
+  override def close(): Unit =
+    context.synchronizedLifecycle {
+      if !closed then
+        context.requireOpen()
+        val status = backend.destroyStream(
+          context.nativeHandle,
+          handle
+        )
+        if !status.succeeded then
+          throw CudaDriverException(
+            CudaDriverFailure.fromStatus(
+              "CUDA stream destruction",
+              status
+            )
+          )
+        closed = true
+        context.unregister(this)
+    }
+
+  private[cuda] def requireOpen(): Unit =
+    context.requireOpen()
+    if closed then
+      throw IllegalStateException("CUDA stream is closed")
+
+  private[cuda] def nativeHandle: Long =
+    context.synchronizedLifecycle {
+      requireOpen()
+      handle
+    }
 
 final class CudaDeviceBuffer[T] private[cuda] (
     val context: CudaContext,
@@ -380,12 +476,13 @@ final class CudaModule private[cuda] (
 
   private[cuda] def submit(
       functionHandle: Long,
+      streamHandle: Long,
       request: NativeLaunchRequest
   ): NativeCudaDriverStatus =
     backend.launchKernel(
       contextHandle = context.nativeHandle,
       functionHandle = functionHandle,
-      streamHandle = 0L,
+      streamHandle = streamHandle,
       request = request
     )
 
@@ -410,22 +507,38 @@ final class CudaFunction[Args <: Tuple] private[cuda] (
       invocation: KernelInvocation[Args],
       config: LaunchConfig
   ): Either[CudaLaunchFailure, Unit] =
+    launchOn(invocation, config, None)
+
+  def launch(
+      invocation: KernelInvocation[Args],
+      config: LaunchConfig,
+      stream: CudaStream
+  ): Either[CudaLaunchFailure, Unit] =
+    launchOn(invocation, config, Some(stream))
+
+  private def launchOn(
+      invocation: KernelInvocation[Args],
+      config: LaunchConfig,
+      stream: Option[CudaStream]
+  ): Either[CudaLaunchFailure, Unit] =
     module.context.synchronizedLifecycle {
       module.requireOpen()
       validateInvocation(invocation).flatMap { _ =>
         validateDynamicSharedMemory(config).flatMap { _ =>
-          val request = invocation.nativeLaunchRequest(config)
-          val status = module.submit(handle, request)
-          if status.succeeded then Right(())
-          else
-            Left(
-              CudaLaunchFailure.Driver(
-                CudaDriverFailure.fromStatus(
-                  s"CUDA kernel launch for $name",
-                  status
+          validateStream(stream).flatMap { streamHandle =>
+            val request = invocation.nativeLaunchRequest(config)
+            val status = module.submit(handle, streamHandle, request)
+            if status.succeeded then Right(())
+            else
+              Left(
+                CudaLaunchFailure.Driver(
+                  CudaDriverFailure.fromStatus(
+                    s"CUDA kernel launch for $name",
+                    status
+                  )
                 )
               )
-            )
+          }
         }
       }
     }
@@ -479,6 +592,17 @@ final class CudaFunction[Args <: Tuple] private[cuda] (
           )
         )
       case Some(_) => Right(())
+
+  private def validateStream(
+      stream: Option[CudaStream]
+  ): Either[CudaLaunchFailure, Long] =
+    stream match
+      case None => Right(0L)
+      case Some(value) if !(value.context eq module.context) =>
+        Left(CudaLaunchFailure.StreamContextMismatch(name))
+      case Some(value) =>
+        value.requireOpen()
+        Right(value.nativeHandle)
 
 object CudaDriverFailure:
   private[cuda] def fromStatus(

@@ -47,6 +47,7 @@ int main(int argument_count, char** arguments) {
   const flight4s::cuda::CudaDriver driver;
   CUcontext context = nullptr;
   CUmodule module = nullptr;
+  CUstream stream = nullptr;
   CUdeviceptr memory = 0;
   bool retained = false;
 
@@ -70,6 +71,19 @@ int main(int argument_count, char** arguments) {
       throw std::runtime_error(
           "invalid compute capability metadata");
     }
+
+    const auto stream_result = driver.create_stream(
+        context,
+        CU_STREAM_NON_BLOCKING);
+    require_success(stream_result.status, "create stream");
+    stream = stream_result.stream;
+    if (stream == nullptr) {
+      throw std::runtime_error(
+          "successful stream creation returned null");
+    }
+    require_success(
+        driver.synchronize_stream(context, stream),
+        "synchronize stream");
 
     const std::array<std::int32_t, 4> host_source{
         11, 22, 33, 44};
@@ -150,6 +164,10 @@ int main(int argument_count, char** arguments) {
         "free device memory");
     memory = 0;
     require_success(
+        driver.destroy_stream(context, stream),
+        "destroy stream");
+    stream = nullptr;
+    require_success(
         driver.release_primary_context(0),
         "release primary context");
     retained = false;
@@ -161,6 +179,9 @@ int main(int argument_count, char** arguments) {
     }
     if (module != nullptr && context != nullptr) {
       static_cast<void>(driver.unload_module(context, module));
+    }
+    if (stream != nullptr && context != nullptr) {
+      static_cast<void>(driver.destroy_stream(context, stream));
     }
     if (retained) {
       static_cast<void>(driver.release_primary_context(0));
