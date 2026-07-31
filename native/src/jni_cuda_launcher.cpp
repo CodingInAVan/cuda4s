@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "flight4s/cuda/cuda_launcher.hpp"
+#include "jni_cuda_result.hpp"
 #include "jni_environment.hpp"
 
 namespace {
@@ -14,9 +15,11 @@ namespace {
 class CudaLaunchJniAdapter final {
  public:
   explicit CudaLaunchJniAdapter(JNIEnv* environment) noexcept
-      : environment_(environment) {}
+      : environment_(environment),
+        results_(environment) {}
 
-  [[nodiscard]] jint launch(
+  [[nodiscard]] jobject launch(
+      jlong context_handle,
       jlong function_handle,
       jlong stream_handle,
       jint grid_x,
@@ -57,6 +60,8 @@ class CudaLaunchJniAdapter final {
     }
 
     const flight4s::cuda::CudaLaunchRequest request{
+        reinterpret_cast<CUcontext>(
+            static_cast<std::uintptr_t>(context_handle)),
         reinterpret_cast<CUfunction>(
             static_cast<std::uintptr_t>(function_handle)),
         reinterpret_cast<CUstream>(
@@ -84,7 +89,7 @@ class CudaLaunchJniAdapter final {
         },
     };
 
-    return static_cast<jint>(launcher_.launch(request));
+    return results_.driver_result(launcher_.launch(request));
   }
 
  private:
@@ -173,15 +178,17 @@ class CudaLaunchJniAdapter final {
   }
 
   JNIEnv* environment_;
+  flight4s::jni::CudaJniResultFactory results_;
   flight4s::cuda::CudaLauncher launcher_;
 };
 
 }  // namespace
 
-extern "C" JNIEXPORT jint JNICALL
+extern "C" JNIEXPORT jobject JNICALL
 Java_flight4s_runtime_cuda_internal_CudaNativeBindings_launchKernel(
     JNIEnv* environment,
     jclass,
+    jlong context_handle,
     jlong function_handle,
     jlong stream_handle,
     jint grid_x,
@@ -201,6 +208,7 @@ Java_flight4s_runtime_cuda_internal_CudaNativeBindings_launchKernel(
   const flight4s::jni::JniEnvironment jni(environment);
   try {
     return CudaLaunchJniAdapter(environment).launch(
+        context_handle,
         function_handle,
         stream_handle,
         grid_x,
@@ -224,5 +232,5 @@ Java_flight4s_runtime_cuda_internal_CudaNativeBindings_launchKernel(
   } catch (const std::exception& error) {
     jni.throw_runtime_exception(error.what());
   }
-  return 0;
+  return nullptr;
 }

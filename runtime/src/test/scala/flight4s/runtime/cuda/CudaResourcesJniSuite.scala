@@ -7,6 +7,8 @@ import munit.FunSuite
 import flight4s.core.codegen.*
 import flight4s.core.compiler.NvrtcArtifact
 import flight4s.core.dsl.CudaDsl.*
+import flight4s.core.ir.Kernel
+import flight4s.core.launch.{Block as LaunchBlock, Grid, LaunchConfig}
 
 class CudaResourcesJniSuite extends FunSuite:
   private val nativeLibraryConfigured =
@@ -47,6 +49,13 @@ class CudaResourcesJniSuite extends FunSuite:
       assertEquals(function.name, "loadedKernel")
       assert(function.signature eq generated.kernel.signature)
       assert(function.nativeHandle != 0L)
+
+      function.launch(
+        generated.definition.bind(EmptyTuple),
+        LaunchConfig(Grid.x(1), LaunchBlock.x(1))
+      ) match
+        case Right(()) => ()
+        case Left(failure) => fail(failure.message)
 
       module.close()
       assert(!module.isOpen)
@@ -106,6 +115,7 @@ class CudaResourcesJniSuite extends FunSuite:
       case Right(value) => value
       case Left(error) => fail(error.message)
     GeneratedFixture(
+      definition,
       generatedKernel,
       GeneratedCudaModule(
         cudaSource = generatedKernel.cudaSource,
@@ -116,6 +126,7 @@ class CudaResourcesJniSuite extends FunSuite:
     )
 
   private final case class GeneratedFixture(
+      definition: Kernel[EmptyTuple],
       kernel: GeneratedKernel[EmptyTuple],
       module: GeneratedCudaModule
   )

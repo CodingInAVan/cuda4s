@@ -60,6 +60,7 @@ set_target_properties(
 add_library(
   flight4s_cuda_driver
   STATIC
+  src/current_context_scope.cpp
   src/cuda_driver.cpp
 )
 target_compile_features(flight4s_cuda_driver PUBLIC cxx_std_20)
@@ -83,6 +84,7 @@ add_library(
   flight4s_cuda
   SHARED
   src/cuda_launcher.cpp
+  src/jni_cuda_result.cpp
   src/jni_environment.cpp
   src/jni_cuda_launcher.cpp
   src/jni_cuda_driver.cpp
@@ -262,6 +264,7 @@ if(BUILD_TESTING)
     target_link_libraries(
       flight4s_cuda_launch_integration_tests
       PRIVATE
+      flight4s_cuda_driver
       flight4s_launch_contract
       CUDA::cuda_driver
     )

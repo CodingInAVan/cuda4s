@@ -36,13 +36,25 @@ final case class SourceMap(entries: Vector[SourceMapEntry]):
       .filter(_.generatedLine <= generatedLine)
       .maxByOption(_.generatedLine)
 
+final case class DynamicSharedMemoryRequirement(
+    elementSizeBytes: Int,
+    elementAlignmentBytes: Int
+):
+  require(elementSizeBytes > 0, "element size must be positive")
+  require(elementAlignmentBytes > 0, "element alignment must be positive")
+
+final case class KernelLaunchRequirements(
+    dynamicSharedMemory: Option[DynamicSharedMemoryRequirement] = None
+)
+
 final case class GeneratedKernel[Args <: Tuple](
     name: String,
     signature: KernelSignature[Args],
     cudaSource: String,
     sourceMap: SourceMap,
     compilerOptions: CompilerOptions,
-    declarationLine: Int
+    declarationLine: Int,
+    launchRequirements: KernelLaunchRequirements
 )
 
 final case class GeneratedCudaModule(

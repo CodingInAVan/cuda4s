@@ -1,11 +1,15 @@
 #include "flight4s/cuda/cuda_launcher.hpp"
+#include "flight4s/cuda/current_context_scope.hpp"
 
 #include <stdexcept>
 
 namespace flight4s::cuda {
 
-CUresult CudaLauncher::launch(
+CudaDriverStatus CudaLauncher::launch(
     const CudaLaunchRequest& request) const {
+  if (request.context == nullptr) {
+    throw std::invalid_argument("CUDA context handle must not be null");
+  }
   if (request.function == nullptr) {
     throw std::invalid_argument("CUDA function handle must not be null");
   }
@@ -14,6 +18,11 @@ CUresult CudaLauncher::launch(
   }
   if (auto error = validate_argument_layout(request.arguments)) {
     throw std::invalid_argument(*error);
+  }
+
+  CurrentContextScope current(request.context);
+  if (current.push_result() != CUDA_SUCCESS) {
+    return make_driver_status(current.push_result());
   }
 
   auto argument_pointers = build_argument_pointers(request.arguments);
@@ -42,11 +51,14 @@ CUresult CudaLauncher::launch(
     config.numAttrs = 1;
   }
 
-  return cuLaunchKernelEx(
+  const auto launch_result = cuLaunchKernelEx(
       &config,
       request.function,
       argument_pointers.empty() ? nullptr : argument_pointers.data(),
       nullptr);
+  const auto pop_result = current.close();
+  return make_driver_status(
+      launch_result == CUDA_SUCCESS ? pop_result : launch_result);
 }
 
 }  // namespace flight4s::cuda

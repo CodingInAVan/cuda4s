@@ -4,11 +4,13 @@ import flight4s.core.abi.NativeLaunchRequest
 
 private[flight4s] object NativeCudaLauncher:
   def launch(
+      contextHandle: Long,
       functionHandle: Long,
       streamHandle: Long,
       request: NativeLaunchRequest
-  ): Int =
+  ): NativeCudaDriverResult =
     CudaNativeBindings.launchKernel(
+      contextHandle,
       functionHandle,
       streamHandle,
       request.gridX,

@@ -21,7 +21,8 @@ object CudaCodegen:
         cudaSource = generated.cudaSource,
         sourceMap = generated.sourceMap,
         compilerOptions = generated.compilerOptions,
-        declarationLine = generated.kernels.head.declarationLine
+        declarationLine = generated.kernels.head.declarationLine,
+        launchRequirements = generated.kernels.head.launchRequirements
       )
     }
 
@@ -132,7 +133,22 @@ object CudaCodegen:
         cudaSource = source,
         sourceMap = sourceMap,
         compilerOptions = compilerOptions,
-        declarationLine = declarationLine
+        declarationLine = declarationLine,
+        launchRequirements = KernelLaunchRequirements(
+          dynamicSharedMemory =
+            kernel.sharedMemory.collectFirst {
+              case SharedArray(
+                    _,
+                    valueType,
+                    DynamicSharedMemory,
+                    _
+                  ) =>
+                DynamicSharedMemoryRequirement(
+                  elementSizeBytes = valueType.sizeBytes,
+                  elementAlignmentBytes = valueType.alignmentBytes
+                )
+            }
+        )
       )
 
     private def emitHeaders(): Unit =
