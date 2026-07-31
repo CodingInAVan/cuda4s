@@ -40,4 +40,23 @@ final class CudaNativeBindings {
       byte[] sourceUtf8,
       byte[] programNameUtf8,
       byte[][] optionsUtf8);
+
+  static native NativeCudaContextResult retainPrimaryContext(
+      int deviceOrdinal);
+
+  static native NativeCudaDriverResult releasePrimaryContext(
+      int deviceOrdinal);
+
+  static native NativeCudaDriverResult loadPtx(
+      long contextHandle,
+      byte[] ptx);
+
+  static native NativeCudaDriverResult unloadModule(
+      long contextHandle,
+      long moduleHandle);
+
+  static native NativeCudaDriverResult resolveFunction(
+      long contextHandle,
+      long moduleHandle,
+      byte[] functionNameUtf8);
 }
