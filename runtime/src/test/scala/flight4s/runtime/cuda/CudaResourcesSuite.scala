@@ -117,6 +117,7 @@ class CudaResourcesSuite extends FunSuite:
 
     context.close()
     intercept[IllegalStateException](context.load(fixture.artifact))
+    intercept[IllegalStateException](context.createStream())
 
   test("typed device buffers copy exact host arrays"):
     val backend = RecordingBackend()
@@ -144,21 +145,52 @@ class CudaResourcesSuite extends FunSuite:
     intercept[IllegalStateException](buffer.copyToArray())
     context.close()
 
-  test("context closes modules and buffers in reverse creation order"):
+  test("explicit streams synchronize and close deterministically"):
+    val backend = RecordingBackend()
+    val context = openedContext(backend)
+    val stream = context.createStream().toOption.get
+
+    assert(stream.isOpen)
+    assertEquals(stream.mode, CudaStreamMode.NonBlocking)
+    assertEquals(stream.synchronize(), Right(()))
+
+    stream.close()
+
+    assert(!stream.isOpen)
+    intercept[IllegalStateException](stream.synchronize())
+    context.close()
+    assertEquals(
+      backend.events.filter { event =>
+        event.startsWith("createStream:") ||
+        event.startsWith("synchronizeStream:") ||
+        event.startsWith("destroyStream:")
+      }.toVector,
+      Vector(
+        "createStream:100:1",
+        "synchronizeStream:100:400",
+        "destroyStream:100:400"
+      )
+    )
+
+  test("context closes modules, buffers, and streams in reverse order"):
     val backend = RecordingBackend()
     val context = openedContext(backend)
     context.allocate[Int](2).toOption.get
     context.load(generatedFixture("betweenBuffers").artifact).toOption.get
+    context.createStream(CudaStreamMode.Default).toOption.get
     context.allocate[Float](2).toOption.get
 
     context.close()
 
     assertEquals(
       backend.events.filter { event =>
-        event.startsWith("free:") || event.startsWith("unload:")
+        event.startsWith("free:") ||
+        event.startsWith("unload:") ||
+        event.startsWith("destroyStream:")
       }.toVector,
       Vector(
         "free:100:1001",
+        "destroyStream:100:400",
         "unload:100:200",
         "free:100:1000"
       )
@@ -213,6 +245,42 @@ class CudaResourcesSuite extends FunSuite:
     context.close()
     assert(!buffer.isOpen)
 
+  test("stream failures remain structured and retryable"):
+    val backend = RecordingBackend()
+    val context = openedContext(backend)
+    backend.createStreamStatus =
+      failureStatus("CUDA_ERROR_OUT_OF_MEMORY")
+
+    val creationFailure =
+      context.createStream().swap.toOption.get
+
+    assertEquals(creationFailure.operation, "CUDA stream creation")
+
+    backend.createStreamStatus = successStatus
+    val stream = context.createStream().toOption.get
+    backend.synchronizeStreamStatus =
+      failureStatus("CUDA_ERROR_LAUNCH_FAILED")
+
+    val synchronizationFailure =
+      stream.synchronize().swap.toOption.get
+
+    assertEquals(
+      synchronizationFailure.operation,
+      "CUDA stream synchronization"
+    )
+
+    backend.synchronizeStreamStatus = successStatus
+    backend.destroyStreamStatus =
+      failureStatus("CUDA_ERROR_INVALID_CONTEXT")
+    val exception = intercept[CudaDriverException](stream.close())
+
+    assertEquals(exception.failure.operation, "CUDA stream destruction")
+    assert(stream.isOpen)
+
+    backend.destroyStreamStatus = successStatus
+    context.close()
+    assert(!stream.isOpen)
+
   test("typed function submits its matching invocation"):
     val backend = RecordingBackend()
     val fixture = generatedFixture("launchKernel")
@@ -230,6 +298,63 @@ class CudaResourcesSuite extends FunSuite:
       "launch:100:300:0:2:32"
     )
     context.close()
+
+  test("typed function submits on an owned explicit stream"):
+    val backend = RecordingBackend()
+    val fixture = generatedFixture("streamKernel")
+    val context = openedContext(backend)
+    val module = context.load(fixture.artifact).toOption.get
+    val function = module.function(fixture.kernel).toOption.get
+    val stream = context.createStream().toOption.get
+    val config = LaunchConfig(Grid.x(2), LaunchBlock.x(32))
+
+    val result = function.launch(
+      fixture.definition.bind(EmptyTuple),
+      config,
+      stream
+    )
+
+    assertEquals(result, Right(()))
+    assertEquals(
+      backend.events.last,
+      "launch:100:300:400:2:32"
+    )
+    stream.close()
+    intercept[IllegalStateException](
+      function.launch(
+        fixture.definition.bind(EmptyTuple),
+        config,
+        stream
+      )
+    )
+    context.close()
+
+  test("typed function rejects a stream from another context"):
+    val backend = RecordingBackend()
+    val fixture = generatedFixture("foreignStreamKernel")
+    val functionContext = openedContext(backend)
+    val streamContext = openedContext(backend)
+    val module = functionContext.load(fixture.artifact).toOption.get
+    val function = module.function(fixture.kernel).toOption.get
+    val foreignStream = streamContext.createStream().toOption.get
+
+    val failure = function
+      .launch(
+        fixture.definition.bind(EmptyTuple),
+        LaunchConfig(Grid.x(1), LaunchBlock.x(1)),
+        foreignStream
+      )
+      .swap
+      .toOption
+      .get
+
+    assertEquals(
+      failure,
+      CudaLaunchFailure.StreamContextMismatch("foreignStreamKernel")
+    )
+    assert(!backend.events.exists(_.startsWith("launch:")))
+    functionContext.close()
+    streamContext.close()
 
   test("typed function rejects an invocation from another kernel"):
     val backend = RecordingBackend()
@@ -453,11 +578,15 @@ class CudaResourcesSuite extends FunSuite:
     var resolveStatus: NativeCudaDriverStatus = successStatus
     var releaseStatus: NativeCudaDriverStatus = successStatus
     var launchStatus: NativeCudaDriverStatus = successStatus
+    var createStreamStatus: NativeCudaDriverStatus = successStatus
+    var destroyStreamStatus: NativeCudaDriverStatus = successStatus
+    var synchronizeStreamStatus: NativeCudaDriverStatus = successStatus
     var allocateStatus: NativeCudaDriverStatus = successStatus
     var freeStatus: NativeCudaDriverStatus = successStatus
     var hostToDeviceStatus: NativeCudaDriverStatus = successStatus
     var deviceToHostStatus: NativeCudaDriverStatus = successStatus
     private var nextModuleHandle = 200L
+    private var nextStreamHandle = 400L
     private var nextDeviceAddress = 1000L
     private val memory = HashMap.empty[Long, Array[Byte]]
 
@@ -520,6 +649,32 @@ class CudaResourcesSuite extends FunSuite:
         s"launch:$contextHandle:$functionHandle:$streamHandle:" +
           s"${request.gridX}:${request.blockX}"
       launchStatus
+
+    override def createStream(
+        contextHandle: Long,
+        flags: Int
+    ): NativeCudaResourceResult =
+      events += s"createStream:$contextHandle:$flags"
+      val handle = nextStreamHandle
+      nextStreamHandle += 1
+      NativeCudaResourceResult(
+        handle = if createStreamStatus.succeeded then handle else 0L,
+        status = createStreamStatus
+      )
+
+    override def destroyStream(
+        contextHandle: Long,
+        streamHandle: Long
+    ): NativeCudaDriverStatus =
+      events += s"destroyStream:$contextHandle:$streamHandle"
+      destroyStreamStatus
+
+    override def synchronizeStream(
+        contextHandle: Long,
+        streamHandle: Long
+    ): NativeCudaDriverStatus =
+      events += s"synchronizeStream:$contextHandle:$streamHandle"
+      synchronizeStreamStatus
 
     override def allocateDeviceMemory(
         contextHandle: Long,

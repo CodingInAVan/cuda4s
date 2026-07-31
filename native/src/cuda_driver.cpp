@@ -51,6 +51,14 @@ void require_device_address(
   }
 }
 
+void require_stream_flags(std::uint32_t flags) {
+  if (flags != CU_STREAM_DEFAULT &&
+      flags != CU_STREAM_NON_BLOCKING) {
+    throw std::invalid_argument(
+        "unsupported CUDA stream flags");
+  }
+}
+
 std::size_t checked_size(
     std::uint64_t size_bytes,
     const char* description) {
@@ -251,6 +259,55 @@ CudaFunctionResult CudaDriver::resolve_function(
       std::move(status),
       succeeded ? function : nullptr,
   };
+}
+
+CudaStreamResult CudaDriver::create_stream(
+    CUcontext context,
+    std::uint32_t flags) const {
+  require_handle(context, "CUDA context handle");
+  require_stream_flags(flags);
+
+  CurrentContextScope current(context);
+  if (current.push_result() != CUDA_SUCCESS) {
+    return {make_driver_status(current.push_result()), nullptr};
+  }
+
+  CUstream stream = nullptr;
+  const auto create_result = cuStreamCreate(&stream, flags);
+  auto status = finish_context_operation(create_result, current);
+  const bool succeeded = status.succeeded();
+  return {
+      std::move(status),
+      succeeded ? stream : nullptr,
+  };
+}
+
+CudaDriverStatus CudaDriver::destroy_stream(
+    CUcontext context,
+    CUstream stream) const {
+  require_handle(context, "CUDA context handle");
+  require_handle(stream, "CUDA stream handle");
+
+  CurrentContextScope current(context);
+  if (current.push_result() != CUDA_SUCCESS) {
+    return make_driver_status(current.push_result());
+  }
+  return finish_context_operation(cuStreamDestroy(stream), current);
+}
+
+CudaDriverStatus CudaDriver::synchronize_stream(
+    CUcontext context,
+    CUstream stream) const {
+  require_handle(context, "CUDA context handle");
+  require_handle(stream, "CUDA stream handle");
+
+  CurrentContextScope current(context);
+  if (current.push_result() != CUDA_SUCCESS) {
+    return make_driver_status(current.push_result());
+  }
+  return finish_context_operation(
+      cuStreamSynchronize(stream),
+      current);
 }
 
 CudaDeviceMemoryResult CudaDriver::allocate_device_memory(

@@ -98,6 +98,40 @@ class CudaDriverJniAdapter final {
         to_java_handle(result.function));
   }
 
+  [[nodiscard]] jobject create_stream(
+      jlong context_handle,
+      jint flags) const {
+    if (flags != CU_STREAM_DEFAULT &&
+        flags != CU_STREAM_NON_BLOCKING) {
+      throw std::invalid_argument(
+          "unsupported CUDA stream flags");
+    }
+    const auto result = driver_.create_stream(
+        from_java_handle<CUcontext>(context_handle),
+        static_cast<std::uint32_t>(flags));
+    return results_.driver_result(
+        result.status,
+        to_java_handle(result.stream));
+  }
+
+  [[nodiscard]] jobject destroy_stream(
+      jlong context_handle,
+      jlong stream_handle) const {
+    const auto status = driver_.destroy_stream(
+        from_java_handle<CUcontext>(context_handle),
+        from_java_handle<CUstream>(stream_handle));
+    return results_.driver_result(status);
+  }
+
+  [[nodiscard]] jobject synchronize_stream(
+      jlong context_handle,
+      jlong stream_handle) const {
+    const auto status = driver_.synchronize_stream(
+        from_java_handle<CUcontext>(context_handle),
+        from_java_handle<CUstream>(stream_handle));
+    return results_.driver_result(status);
+  }
+
   [[nodiscard]] jobject allocate_device_memory(
       jlong context_handle,
       jlong size_bytes) const {
@@ -285,6 +319,66 @@ Java_flight4s_runtime_cuda_internal_CudaNativeBindings_resolveFunction(
             context_handle,
             module_handle,
             function_name_utf8);
+  } catch (const std::invalid_argument& error) {
+    jni.throw_illegal_argument(error.what());
+  } catch (const std::bad_alloc& error) {
+    jni.throw_out_of_memory(error.what());
+  } catch (const std::exception& error) {
+    jni.throw_runtime_exception(error.what());
+  }
+  return nullptr;
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_flight4s_runtime_cuda_internal_CudaNativeBindings_createStream(
+    JNIEnv* environment,
+    jclass,
+    jlong context_handle,
+    jint flags) {
+  const flight4s::jni::JniEnvironment jni(environment);
+  try {
+    return CudaDriverJniAdapter(environment)
+        .create_stream(context_handle, flags);
+  } catch (const std::invalid_argument& error) {
+    jni.throw_illegal_argument(error.what());
+  } catch (const std::bad_alloc& error) {
+    jni.throw_out_of_memory(error.what());
+  } catch (const std::exception& error) {
+    jni.throw_runtime_exception(error.what());
+  }
+  return nullptr;
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_flight4s_runtime_cuda_internal_CudaNativeBindings_destroyStream(
+    JNIEnv* environment,
+    jclass,
+    jlong context_handle,
+    jlong stream_handle) {
+  const flight4s::jni::JniEnvironment jni(environment);
+  try {
+    return CudaDriverJniAdapter(environment)
+        .destroy_stream(context_handle, stream_handle);
+  } catch (const std::invalid_argument& error) {
+    jni.throw_illegal_argument(error.what());
+  } catch (const std::bad_alloc& error) {
+    jni.throw_out_of_memory(error.what());
+  } catch (const std::exception& error) {
+    jni.throw_runtime_exception(error.what());
+  }
+  return nullptr;
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_flight4s_runtime_cuda_internal_CudaNativeBindings_synchronizeStream(
+    JNIEnv* environment,
+    jclass,
+    jlong context_handle,
+    jlong stream_handle) {
+  const flight4s::jni::JniEnvironment jni(environment);
+  try {
+    return CudaDriverJniAdapter(environment)
+        .synchronize_stream(context_handle, stream_handle);
   } catch (const std::invalid_argument& error) {
     jni.throw_illegal_argument(error.what());
   } catch (const std::bad_alloc& error) {

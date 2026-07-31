@@ -61,6 +61,18 @@ final class CudaNativeBindings {
       long moduleHandle,
       byte[] functionNameUtf8);
 
+  static native NativeCudaDriverResult createStream(
+      long contextHandle,
+      int flags);
+
+  static native NativeCudaDriverResult destroyStream(
+      long contextHandle,
+      long streamHandle);
+
+  static native NativeCudaDriverResult synchronizeStream(
+      long contextHandle,
+      long streamHandle);
+
   static native NativeCudaDriverResult allocateDeviceMemory(
       long contextHandle,
       long sizeBytes);

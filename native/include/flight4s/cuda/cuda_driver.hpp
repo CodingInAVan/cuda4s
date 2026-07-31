@@ -48,6 +48,11 @@ struct CudaDeviceMemoryResult {
   CUdeviceptr address;
 };
 
+struct CudaStreamResult {
+  CudaDriverStatus status;
+  CUstream stream;
+};
+
 class CudaDriver final {
  public:
   [[nodiscard]] CudaContextResult retain_primary_context(
@@ -68,6 +73,18 @@ class CudaDriver final {
       CUcontext context,
       CUmodule module,
       const std::string& name) const;
+
+  [[nodiscard]] CudaStreamResult create_stream(
+      CUcontext context,
+      std::uint32_t flags) const;
+
+  [[nodiscard]] CudaDriverStatus destroy_stream(
+      CUcontext context,
+      CUstream stream) const;
+
+  [[nodiscard]] CudaDriverStatus synchronize_stream(
+      CUcontext context,
+      CUstream stream) const;
 
   [[nodiscard]] CudaDeviceMemoryResult allocate_device_memory(
       CUcontext context,

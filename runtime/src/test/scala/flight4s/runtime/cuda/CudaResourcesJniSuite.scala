@@ -97,7 +97,7 @@ class CudaResourcesJniSuite extends FunSuite:
     finally
       if context.isOpen then context.close()
 
-  test("typed vectorAdd executes through owned device buffers"):
+  test("typed vectorAdd executes through an owned explicit stream"):
     assume(
       nativeLibraryConfigured,
       "set flight4s.cuda.native.path to run JNI tests"
@@ -160,6 +160,7 @@ class CudaResourcesJniSuite extends FunSuite:
       val function = module.function(generatedKernel) match
         case Right(value) => value
         case Left(failure) => fail(failure.message)
+      val stream = context.createStream().toOption.get
       val leftBuffer = context.allocate[Float](elementCount).toOption.get
       val rightBuffer = context.allocate[Float](elementCount).toOption.get
       val outputBuffer = context.allocate[Float](elementCount).toOption.get
@@ -175,8 +176,13 @@ class CudaResourcesJniSuite extends FunSuite:
         LaunchConfig(
           grid = Grid.x(elementCount / 256),
           block = LaunchBlock.x(256)
-        )
+        ),
+        stream
       ) match
+        case Right(()) => ()
+        case Left(failure) => fail(failure.message)
+
+      stream.synchronize() match
         case Right(()) => ()
         case Left(failure) => fail(failure.message)
 

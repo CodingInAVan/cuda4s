@@ -34,7 +34,8 @@ provides:
 - native NVRTC compilation with inspectable PTX, compiler logs, compiler
   version, target, and exact generated-source provenance;
 - structured NVRTC compilation failures that retain source, options, and logs;
-- public `CudaContext`, `CudaModule`, and typed `CudaFunction[Args]` resources;
+- public `CudaContext`, `CudaModule`, `CudaStream`, and typed
+  `CudaFunction[Args]` resources;
 - retained CUDA primary contexts with compute-capability discovery;
 - typed context-owned `CudaDeviceBuffer[T]` allocation and deterministic
   `AutoCloseable` cleanup;
@@ -42,10 +43,15 @@ provides:
   staging storage;
 - host codecs for every current scalar type, preserving raw F16, BF16, and FP8
   representations;
-- reverse-creation-order cleanup across context-owned modules and buffers;
+- context-owned default-mode and non-blocking CUDA streams with explicit
+  synchronization;
+- reverse-creation-order cleanup across context-owned modules, buffers, and
+  streams;
 - typed function resolution that preserves the generated kernel signature;
 - typed `CudaFunction.launch` submission from the original
   `KernelInvocation[Args]`;
+- source-compatible default-stream launch and same-context explicit-stream
+  launch;
 - launch-time kernel provenance and dynamic shared-memory validation;
 - context-scoped `cuLaunchKernelEx` with structured CUDA Driver failures;
 - structured CUDA Driver failures with PTX JIT information and error logs;
@@ -55,13 +61,14 @@ provides:
 - golden-source tests, native NVRTC contract tests, JNI integration tests, and
   an optional `nvcc` compilation test.
 
-Typed launches currently target CUDA's default stream and remain asynchronous.
-Device-buffer host copies are whole-buffer and synchronous, using pageable
-direct staging memory. Pinned host memory, partial and asynchronous copies,
-explicit stream ownership, events, and synchronization are the next runtime
-slices. Source-map artifacts retain known IR spans, while automatic Scala
-source-position capture and NVRTC diagnostic remapping remain later Scala 3
-macro/compiler iterations.
+Typed launches can target CUDA's default stream or an owned explicit stream and
+remain asynchronous. `CudaStream.synchronize()` provides an explicit wait;
+launch never synchronizes implicitly. Device-buffer host copies are
+whole-buffer and synchronous, using pageable direct staging memory. Pinned host
+memory, partial and asynchronous copies, events, and automatic in-flight
+resource lifetime tracking are the next runtime slices. Source-map artifacts
+retain known IR spans, while automatic Scala source-position capture and NVRTC
+diagnostic remapping remain later Scala 3 macro/compiler iterations.
 
 ## Build
 
