@@ -8,6 +8,8 @@ import munit.FunSuite
 import flight4s.core.codegen.*
 import flight4s.core.compiler.*
 import flight4s.core.dsl.CudaDsl.*
+import flight4s.core.ir.Kernel
+import flight4s.core.launch.{Block as LaunchBlock, Grid, LaunchConfig}
 import flight4s.runtime.cuda.internal.*
 
 class CudaResourcesSuite extends FunSuite:
@@ -115,6 +117,138 @@ class CudaResourcesSuite extends FunSuite:
     context.close()
     intercept[IllegalStateException](context.load(fixture.artifact))
 
+  test("typed function submits its matching invocation"):
+    val backend = RecordingBackend()
+    val fixture = generatedFixture("launchKernel")
+    val context = openedContext(backend)
+    val module = context.load(fixture.artifact).toOption.get
+    val function = module.function(fixture.kernel).toOption.get
+    val config = LaunchConfig(Grid.x(2), LaunchBlock.x(32))
+
+    val result =
+      function.launch(fixture.definition.bind(EmptyTuple), config)
+
+    assertEquals(result, Right(()))
+    assertEquals(
+      backend.events.last,
+      "launch:100:300:0:2:32"
+    )
+    context.close()
+
+  test("typed function rejects an invocation from another kernel"):
+    val backend = RecordingBackend()
+    val expected = generatedFixture("expectedKernel")
+    val other = generatedFixture("otherKernel")
+    val context = openedContext(backend)
+    val module = context.load(expected.artifact).toOption.get
+    val function = module.function(expected.kernel).toOption.get
+
+    val failure = function
+      .launch(
+        other.definition.bind(EmptyTuple),
+        LaunchConfig(Grid.x(1), LaunchBlock.x(1))
+      )
+      .swap
+      .toOption
+      .get
+
+    assertEquals(
+      failure,
+      CudaLaunchFailure.InvocationMismatch(
+        "expectedKernel",
+        "otherKernel"
+      )
+    )
+    assert(!backend.events.exists(_.startsWith("launch:")))
+    context.close()
+
+  test("dynamic shared-memory requirements validate before launch"):
+    val backend = RecordingBackend()
+    val definition = kernel("dynamicKernel", params()) { _ =>
+      dynamicSharedArray[Float]("scratch")
+      ()
+    }
+    val fixture = generatedFixture(definition)
+    val context = openedContext(backend)
+    val module = context.load(fixture.artifact).toOption.get
+    val function = module.function(fixture.kernel).toOption.get
+    val invocation = definition.bind(EmptyTuple)
+
+    assertEquals(
+      function.launch(
+        invocation,
+        LaunchConfig(Grid.x(1), LaunchBlock.x(32))
+      ),
+      Left(
+        CudaLaunchFailure.DynamicSharedMemoryRequired(
+          "dynamicKernel",
+          4
+        )
+      )
+    )
+    assertEquals(
+      function.launch(
+        invocation,
+        LaunchConfig(
+          Grid.x(1),
+          LaunchBlock.x(32),
+          dynamicSharedMemoryBytes = 6
+        )
+      ),
+      Left(
+        CudaLaunchFailure.InvalidDynamicSharedMemorySize(
+          "dynamicKernel",
+          configuredBytes = 6,
+          elementSizeBytes = 4,
+          elementAlignmentBytes = 4
+        )
+      )
+    )
+    assertEquals(
+      function.launch(
+        invocation,
+        LaunchConfig(
+          Grid.x(1),
+          LaunchBlock.x(32),
+          dynamicSharedMemoryBytes = 128
+        )
+      ),
+      Right(())
+    )
+    assertEquals(backend.events.count(_.startsWith("launch:")), 1)
+    context.close()
+
+  test("launch preserves structured CUDA Driver failures"):
+    val backend = RecordingBackend()
+    val fixture = generatedFixture("failedLaunch")
+    val context = openedContext(backend)
+    val module = context.load(fixture.artifact).toOption.get
+    val function = module.function(fixture.kernel).toOption.get
+    backend.launchStatus =
+      failureStatus("CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES")
+
+    val failure = function
+      .launch(
+        fixture.definition.bind(EmptyTuple),
+        LaunchConfig(Grid.x(1), LaunchBlock.x(1))
+      )
+      .swap
+      .toOption
+      .get
+
+    failure match
+      case CudaLaunchFailure.Driver(driverFailure) =>
+        assertEquals(
+          driverFailure.operation,
+          "CUDA kernel launch for failedLaunch"
+        )
+        assertEquals(
+          driverFailure.resultName,
+          "CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES"
+        )
+      case other => fail(s"expected Driver failure, received $other")
+    context.close()
+
   test("close failures retain ownership for a retry"):
     val backend = RecordingBackend()
     val fixture = generatedFixture("retryKernel")
@@ -161,7 +295,11 @@ class CudaResourcesSuite extends FunSuite:
   private def generatedFixture(
       name: String
   ): GeneratedFixture =
-    val definition = kernel(name, params()) { _ => () }
+    generatedFixture(kernel(name, params()) { _ => () })
+
+  private def generatedFixture(
+      definition: Kernel[EmptyTuple]
+  ): GeneratedFixture =
     val generatedKernel = CudaCodegen.generate(definition) match
       case Right(value) => value
       case Left(error) => fail(error.message)
@@ -184,9 +322,9 @@ class CudaResourcesSuite extends FunSuite:
         generatedModule.compilerOptions,
         target
       ),
-      programName = s"$name.cu"
+      programName = s"${definition.name}.cu"
     )
-    GeneratedFixture(generatedKernel, artifact)
+    GeneratedFixture(definition, generatedKernel, artifact)
 
   private val successStatus =
     NativeCudaDriverStatus(
@@ -207,6 +345,7 @@ class CudaResourcesSuite extends FunSuite:
     )
 
   private final case class GeneratedFixture(
+      definition: Kernel[EmptyTuple],
       kernel: GeneratedKernel[EmptyTuple],
       artifact: NvrtcArtifact
   )
@@ -217,6 +356,7 @@ class CudaResourcesSuite extends FunSuite:
     var unloadStatus: NativeCudaDriverStatus = successStatus
     var resolveStatus: NativeCudaDriverStatus = successStatus
     var releaseStatus: NativeCudaDriverStatus = successStatus
+    var launchStatus: NativeCudaDriverStatus = successStatus
     private var nextModuleHandle = 200L
 
     override def retainPrimaryContext(
@@ -267,3 +407,14 @@ class CudaResourcesSuite extends FunSuite:
         handle = if resolveStatus.succeeded then 300L else 0L,
         status = resolveStatus
       )
+
+    override def launchKernel(
+        contextHandle: Long,
+        functionHandle: Long,
+        streamHandle: Long,
+        request: flight4s.core.abi.NativeLaunchRequest
+    ): NativeCudaDriverStatus =
+      events +=
+        s"launch:$contextHandle:$functionHandle:$streamHandle:" +
+          s"${request.gridX}:${request.blockX}"
+      launchStatus

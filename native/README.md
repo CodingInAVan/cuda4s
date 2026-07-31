@@ -7,11 +7,12 @@ operations:
 - retain CUDA primary contexts, load PTX modules, resolve functions, and unload
   resources through the CUDA Driver API;
 - validate one typed Flight4s launch request, construct CUDA's `void**` kernel
-  parameter table, and call `cuLaunchKernelEx`.
+  parameter table, establish the owning context, and call `cuLaunchKernelEx`.
 
-The launcher does not synchronize the CUDA context or stream. Scala runtime
-objects own retained primary contexts and loaded modules; stream and allocation
-ownership remain future runtime responsibilities.
+The launcher restores the caller's previous current context after submission
+and does not synchronize the CUDA context or stream. Scala runtime objects own
+retained primary contexts and loaded modules; stream and allocation ownership
+remain future runtime responsibilities.
 
 ## Requirements
 
@@ -41,8 +42,8 @@ failure logs, and request validation.
 
 The optional integration tests compile a small PTX kernel, exercise primary
 context/module/function ownership, and execute ordinary and clustered launches
-through `cuLaunchKernelEx`. They require a CUDA device with compute capability
-9.0 or newer.
+through `cuLaunchKernelEx` while verifying context restoration. They require a
+CUDA device with compute capability 9.0 or newer.
 
 ```shell
 cmake -S native -B native/build \

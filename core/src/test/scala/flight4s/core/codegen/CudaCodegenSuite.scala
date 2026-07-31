@@ -55,6 +55,10 @@ class CudaCodegenSuite extends FunSuite:
       generated.compilerOptions.nvrtcOptions,
       Vector("--std=c++20")
     )
+    assertEquals(
+      generated.launchRequirements,
+      KernelLaunchRequirements()
+    )
 
   test("module generation preserves constant and shared-memory ownership"):
     val coefficients = constantArray[Float]("coefficients", 64)
@@ -114,6 +118,17 @@ class CudaCodegenSuite extends FunSuite:
     )
     assertEquals(generated.kernels.map(_.name), Vector("memorySpaces"))
     assertEquals(generated.kernels.head.declarationLine, 3)
+    assertEquals(
+      generated.kernels.head.launchRequirements,
+      KernelLaunchRequirements(
+        Some(
+          DynamicSharedMemoryRequirement(
+            elementSizeBytes = 4,
+            elementAlignmentBytes = 4
+          )
+        )
+      )
+    )
 
   test("low-precision expressions emit required headers and CUDA conversions"):
     val halfInput = input[Float16]("halfInput")

@@ -18,7 +18,8 @@ final class CudaNativeBindings {
 
   private CudaNativeBindings() {}
 
-  static native int launchKernel(
+  static native NativeCudaDriverResult launchKernel(
+      long contextHandle,
       long functionHandle,
       long streamHandle,
       int gridX,

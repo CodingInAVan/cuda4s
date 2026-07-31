@@ -38,17 +38,21 @@ provides:
 - retained CUDA primary contexts with compute-capability discovery;
 - deterministic context-owned module loading and `AutoCloseable` cleanup;
 - typed function resolution that preserves the generated kernel signature;
+- typed `CudaFunction.launch` submission from the original
+  `KernelInvocation[Args]`;
+- launch-time kernel provenance and dynamic shared-memory validation;
+- context-scoped `cuLaunchKernelEx` with structured CUDA Driver failures;
 - structured CUDA Driver failures with PTX JIT information and error logs;
 - CUDA declaration emission for constants, global parameters, static and
   dynamic shared memory, and lexical local memory;
 - golden-source tests, native NVRTC contract tests, JNI integration tests, and
   an optional `nvcc` compilation test.
 
-Public stream and memory resource APIs are not implemented yet, and loaded
-functions are not connected to the typed launch API in this iteration.
-Source-map artifacts retain known IR spans, while automatic Scala
-source-position capture and NVRTC diagnostic remapping remain later Scala 3
-macro/compiler iterations.
+Public stream and memory resource APIs are not implemented yet. Typed launches
+currently target CUDA's default stream and remain asynchronous; explicit stream
+ownership and synchronization are the next runtime slices. Source-map artifacts
+retain known IR spans, while automatic Scala source-position capture and NVRTC
+diagnostic remapping remain later Scala 3 macro/compiler iterations.
 
 ## Build
 

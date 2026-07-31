@@ -21,6 +21,7 @@ class NativeCudaLauncherSuite extends FunSuite:
     val error = intercept[IllegalArgumentException](
       CudaNativeBindings.launchKernel(
         1L,
+        1L,
         0L,
         1,
         1,
@@ -49,6 +50,7 @@ class NativeCudaLauncherSuite extends FunSuite:
 
     val error = intercept[IllegalArgumentException](
       CudaNativeBindings.launchKernel(
+        1L,
         1L,
         0L,
         1,
@@ -80,6 +82,7 @@ class NativeCudaLauncherSuite extends FunSuite:
     positioned.position(1)
     val error = intercept[IllegalArgumentException](
       CudaNativeBindings.launchKernel(
+        1L,
         1L,
         0L,
         1,
@@ -115,7 +118,7 @@ class NativeCudaLauncherSuite extends FunSuite:
       )
 
     val error = intercept[IllegalArgumentException](
-      NativeCudaLauncher.launch(0L, 0L, request)
+      NativeCudaLauncher.launch(1L, 0L, 0L, request)
     )
 
     assert(error.getMessage.contains("function handle"))

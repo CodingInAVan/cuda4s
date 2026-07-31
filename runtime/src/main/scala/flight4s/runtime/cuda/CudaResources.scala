@@ -1,8 +1,10 @@
 package flight4s.runtime.cuda
 
+import flight4s.core.abi.NativeLaunchRequest
 import flight4s.core.codegen.GeneratedKernel
 import flight4s.core.compiler.{ComputeCapability, NvrtcArtifact}
-import flight4s.core.ir.KernelSignature
+import flight4s.core.ir.{KernelInvocation, KernelSignature}
+import flight4s.core.launch.LaunchConfig
 import flight4s.runtime.cuda.internal.*
 
 final case class CudaDriverFailure(
@@ -19,6 +21,41 @@ final case class CudaDriverFailure(
 final class CudaDriverException(
     val failure: CudaDriverFailure
 ) extends RuntimeException(failure.message)
+
+sealed trait CudaLaunchFailure:
+  def message: String
+
+object CudaLaunchFailure:
+  final case class InvocationMismatch(
+      expectedKernel: String,
+      actualKernel: String
+  ) extends CudaLaunchFailure:
+    override val message: String =
+      s"kernel invocation $actualKernel does not belong to $expectedKernel"
+
+  final case class DynamicSharedMemoryRequired(
+      kernelName: String,
+      elementSizeBytes: Int
+  ) extends CudaLaunchFailure:
+    override val message: String =
+      s"kernel $kernelName requires dynamic shared memory for " +
+        s"$elementSizeBytes-byte elements"
+
+  final case class InvalidDynamicSharedMemorySize(
+      kernelName: String,
+      configuredBytes: Int,
+      elementSizeBytes: Int,
+      elementAlignmentBytes: Int
+  ) extends CudaLaunchFailure:
+    override val message: String =
+      s"kernel $kernelName dynamic shared memory size " +
+        s"$configuredBytes is incompatible with $elementSizeBytes-byte " +
+        s"elements aligned to $elementAlignmentBytes bytes"
+
+  final case class Driver(
+      failure: CudaDriverFailure
+  ) extends CudaLaunchFailure:
+    override def message: String = failure.message
 
 final class CudaContext private (
     val deviceOrdinal: Int,
@@ -186,6 +223,17 @@ final class CudaModule private[cuda] (
     if closed then
       throw IllegalStateException("CUDA module is closed")
 
+  private[cuda] def submit(
+      functionHandle: Long,
+      request: NativeLaunchRequest
+  ): NativeCudaDriverStatus =
+    backend.launchKernel(
+      contextHandle = context.nativeHandle,
+      functionHandle = functionHandle,
+      streamHandle = 0L,
+      request = request
+    )
+
   private def owns[Args <: Tuple](
       generated: GeneratedKernel[Args]
   ): Boolean =
@@ -203,11 +251,79 @@ final class CudaFunction[Args <: Tuple] private[cuda] (
   def signature: KernelSignature[Args] = generated.signature
   def isValid: Boolean = module.isOpen
 
+  def launch(
+      invocation: KernelInvocation[Args],
+      config: LaunchConfig
+  ): Either[CudaLaunchFailure, Unit] =
+    module.context.synchronizedLifecycle {
+      module.requireOpen()
+      validateInvocation(invocation).flatMap { _ =>
+        validateDynamicSharedMemory(config).flatMap { _ =>
+          val request = invocation.nativeLaunchRequest(config)
+          val status = module.submit(handle, request)
+          if status.succeeded then Right(())
+          else
+            Left(
+              CudaLaunchFailure.Driver(
+                CudaDriverFailure.fromStatus(
+                  s"CUDA kernel launch for $name",
+                  status
+                )
+              )
+            )
+        }
+      }
+    }
+
   private[flight4s] def nativeHandle: Long =
     module.context.synchronizedLifecycle {
       module.requireOpen()
       handle
     }
+
+  private def validateInvocation(
+      invocation: KernelInvocation[Args]
+  ): Either[CudaLaunchFailure, Unit] =
+    if invocation.kernel.name == name &&
+        (invocation.kernel.signature eq signature)
+    then Right(())
+    else
+      Left(
+        CudaLaunchFailure.InvocationMismatch(
+          expectedKernel = name,
+          actualKernel = invocation.kernel.name
+        )
+      )
+
+  private def validateDynamicSharedMemory(
+      config: LaunchConfig
+  ): Either[CudaLaunchFailure, Unit] =
+    generated.launchRequirements.dynamicSharedMemory match
+      case None => Right(())
+      case Some(requirement)
+          if config.dynamicSharedMemoryBytes == 0 =>
+        Left(
+          CudaLaunchFailure.DynamicSharedMemoryRequired(
+            kernelName = name,
+            elementSizeBytes = requirement.elementSizeBytes
+          )
+        )
+      case Some(requirement)
+          if config.dynamicSharedMemoryBytes <
+              requirement.elementSizeBytes ||
+            config.dynamicSharedMemoryBytes %
+                requirement.elementSizeBytes != 0 ||
+            config.dynamicSharedMemoryBytes %
+                requirement.elementAlignmentBytes != 0 =>
+        Left(
+          CudaLaunchFailure.InvalidDynamicSharedMemorySize(
+            kernelName = name,
+            configuredBytes = config.dynamicSharedMemoryBytes,
+            elementSizeBytes = requirement.elementSizeBytes,
+            elementAlignmentBytes = requirement.elementAlignmentBytes
+          )
+        )
+      case Some(_) => Right(())
 
 object CudaDriverFailure:
   private[cuda] def fromStatus(

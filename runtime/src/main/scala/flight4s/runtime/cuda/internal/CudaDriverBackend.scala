@@ -2,6 +2,8 @@ package flight4s.runtime.cuda.internal
 
 import java.nio.charset.StandardCharsets
 
+import flight4s.core.abi.NativeLaunchRequest
+
 private[flight4s] final case class NativeCudaDriverStatus(
     resultCode: Int,
     resultName: String,
@@ -48,6 +50,13 @@ private[flight4s] trait CudaDriverBackend:
       moduleHandle: Long,
       functionName: String
   ): NativeCudaResourceResult
+
+  def launchKernel(
+      contextHandle: Long,
+      functionHandle: Long,
+      streamHandle: Long,
+      request: NativeLaunchRequest
+  ): NativeCudaDriverStatus
 
 private[flight4s] object NativeCudaDriver extends CudaDriverBackend:
   override def retainPrimaryContext(
@@ -101,6 +110,21 @@ private[flight4s] object NativeCudaDriver extends CudaDriverBackend:
         contextHandle,
         moduleHandle,
         functionName.getBytes(StandardCharsets.UTF_8)
+      )
+    )
+
+  override def launchKernel(
+      contextHandle: Long,
+      functionHandle: Long,
+      streamHandle: Long,
+      request: NativeLaunchRequest
+  ): NativeCudaDriverStatus =
+    status(
+      NativeCudaLauncher.launch(
+        contextHandle,
+        functionHandle,
+        streamHandle,
+        request
       )
     )
 

@@ -36,6 +36,7 @@ void write_argument(
 }
 
 void launch_and_verify(
+    CUcontext context,
     CUfunction function,
     CUdeviceptr output,
     bool uses_cluster,
@@ -69,11 +70,20 @@ void launch_and_verify(
   };
 
   const flight4s::cuda::CudaLauncher launcher;
+  check_cuda(cuCtxSetCurrent(nullptr), "clear current context");
+  const auto launch_status = launcher.launch(
+      {context, function, nullptr, geometry, arguments});
   check_cuda(
-      launcher.launch(
-          {function, nullptr, geometry, arguments}),
+      launch_status.result_code,
       uses_cluster ? "clustered cuLaunchKernelEx"
                    : "ordinary cuLaunchKernelEx");
+  CUcontext current = nullptr;
+  check_cuda(cuCtxGetCurrent(&current), "query current context");
+  if (current != nullptr) {
+    throw std::runtime_error(
+        "CUDA launcher did not restore the previous context");
+  }
+  check_cuda(cuCtxSetCurrent(context), "restore current context");
 
   std::vector<int> output_values(64);
   check_cuda(
@@ -140,8 +150,8 @@ int main(int argument_count, char** arguments) {
         cuMemAlloc(&output, 64 * sizeof(int)),
         "cuMemAlloc");
 
-    launch_and_verify(function, output, false, 100);
-    launch_and_verify(function, output, true, 200);
+    launch_and_verify(context, function, output, false, 100);
+    launch_and_verify(context, function, output, true, 200);
 
     check_cuda(cuMemFree(output), "cuMemFree");
     output = 0;

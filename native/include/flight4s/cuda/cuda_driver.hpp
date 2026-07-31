@@ -20,6 +20,11 @@ struct CudaDriverStatus {
   }
 };
 
+[[nodiscard]] CudaDriverStatus make_driver_status(
+    CUresult result,
+    std::string info_log = {},
+    std::string error_log = {});
+
 struct CudaContextResult {
   CudaDriverStatus status;
   CUcontext context;
