@@ -8,6 +8,10 @@ sealed trait CudaHostCodec[T]:
   def cudaType: CudaType[T]
 
   private[cuda] def encode(values: Array[T]): ByteBuffer
+  private[cuda] def encodeInto(
+      values: Array[T],
+      destination: ByteBuffer
+  ): Unit
   private[cuda] def decode(bytes: ByteBuffer, elementCount: Int): Array[T]
 
 object CudaHostCodec:
@@ -23,12 +27,29 @@ object CudaHostCodec:
       val bytes = ByteBuffer
         .allocateDirect(sizeBytes)
         .order(ByteOrder.nativeOrder())
+      encodeInto(values, bytes)
+      bytes
+
+    override private[cuda] def encodeInto(
+        values: Array[T],
+        destination: ByteBuffer
+    ): Unit =
+      val sizeBytes =
+        Math.multiplyExact(values.length, cudaType.sizeBytes)
+      require(destination.isDirect, "host codec destination must be direct")
+      require(
+        destination.capacity() == sizeBytes,
+        s"host codec destination capacity ${destination.capacity()} " +
+          s"does not match encoded size $sizeBytes"
+      )
+      val output = destination
+        .duplicate()
+        .order(ByteOrder.nativeOrder())
+      output.clear()
       var index = 0
       while index < values.length do
-        write(bytes, values(index))
+        write(output, values(index))
         index += 1
-      bytes.clear()
-      bytes
 
     override private[cuda] def decode(
         bytes: ByteBuffer,

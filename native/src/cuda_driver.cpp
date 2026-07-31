@@ -310,6 +310,44 @@ CudaDriverStatus CudaDriver::synchronize_stream(
       current);
 }
 
+CudaPinnedMemoryResult CudaDriver::allocate_pinned_memory(
+    CUcontext context,
+    std::uint64_t size_bytes) const {
+  require_handle(context, "CUDA context handle");
+  const auto native_size =
+      checked_size(size_bytes, "CUDA pinned allocation size");
+
+  CurrentContextScope current(context);
+  if (current.push_result() != CUDA_SUCCESS) {
+    return {make_driver_status(current.push_result()), nullptr};
+  }
+
+  void* address = nullptr;
+  const auto allocation_result = cuMemHostAlloc(
+      &address,
+      native_size,
+      0);
+  auto status = finish_context_operation(allocation_result, current);
+  const bool succeeded = status.succeeded();
+  return {
+      std::move(status),
+      succeeded ? address : nullptr,
+  };
+}
+
+CudaDriverStatus CudaDriver::free_pinned_memory(
+    CUcontext context,
+    void* address) const {
+  require_handle(context, "CUDA context handle");
+  require_handle(address, "CUDA pinned host address");
+
+  CurrentContextScope current(context);
+  if (current.push_result() != CUDA_SUCCESS) {
+    return make_driver_status(current.push_result());
+  }
+  return finish_context_operation(cuMemFreeHost(address), current);
+}
+
 CudaDeviceMemoryResult CudaDriver::allocate_device_memory(
     CUcontext context,
     std::uint64_t size_bytes) const {

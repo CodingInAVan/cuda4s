@@ -39,6 +39,9 @@ provides:
 - retained CUDA primary contexts with compute-capability discovery;
 - typed context-owned `CudaDeviceBuffer[T]` allocation and deterministic
   `AutoCloseable` cleanup;
+- typed context-owned `CudaPinnedBuffer[T]` allocation backed by reusable
+  page-locked host memory;
+- exact synchronous transfers between same-context pinned and device buffers;
 - exact whole-buffer synchronous host/device copies through native-order direct
   staging storage;
 - host codecs for every current scalar type, preserving raw F16, BF16, and FP8
@@ -63,12 +66,14 @@ provides:
 
 Typed launches can target CUDA's default stream or an owned explicit stream and
 remain asynchronous. `CudaStream.synchronize()` provides an explicit wait;
-launch never synchronizes implicitly. Device-buffer host copies are
-whole-buffer and synchronous, using pageable direct staging memory. Pinned host
-memory, partial and asynchronous copies, events, and automatic in-flight
-resource lifetime tracking are the next runtime slices. Source-map artifacts
-retain known IR spans, while automatic Scala source-position capture and NVRTC
-diagnostic remapping remain later Scala 3 macro/compiler iterations.
+launch never synchronizes implicitly. Device-buffer array copies remain
+whole-buffer and synchronous through temporary pageable direct staging.
+Reusable `CudaPinnedBuffer[T]` storage provides a page-locked synchronous path
+without repeated direct-buffer allocation. Partial and asynchronous copies,
+events, and automatic in-flight resource lifetime tracking are the next runtime
+slices. Source-map artifacts retain known IR spans, while automatic Scala
+source-position capture and NVRTC diagnostic remapping remain later Scala 3
+macro/compiler iterations.
 
 ## Build
 

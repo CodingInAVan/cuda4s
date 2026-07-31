@@ -73,6 +73,14 @@ final class CudaNativeBindings {
       long contextHandle,
       long streamHandle);
 
+  static native NativeCudaPinnedMemoryResult allocatePinnedMemory(
+      long contextHandle,
+      long sizeBytes);
+
+  static native NativeCudaDriverResult freePinnedMemory(
+      long contextHandle,
+      long hostAddress);
+
   static native NativeCudaDriverResult allocateDeviceMemory(
       long contextHandle,
       long sizeBytes);

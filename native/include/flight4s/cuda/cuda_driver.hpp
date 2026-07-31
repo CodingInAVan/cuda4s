@@ -48,6 +48,11 @@ struct CudaDeviceMemoryResult {
   CUdeviceptr address;
 };
 
+struct CudaPinnedMemoryResult {
+  CudaDriverStatus status;
+  void* address;
+};
+
 struct CudaStreamResult {
   CudaDriverStatus status;
   CUstream stream;
@@ -85,6 +90,14 @@ class CudaDriver final {
   [[nodiscard]] CudaDriverStatus synchronize_stream(
       CUcontext context,
       CUstream stream) const;
+
+  [[nodiscard]] CudaPinnedMemoryResult allocate_pinned_memory(
+      CUcontext context,
+      std::uint64_t size_bytes) const;
+
+  [[nodiscard]] CudaDriverStatus free_pinned_memory(
+      CUcontext context,
+      void* address) const;
 
   [[nodiscard]] CudaDeviceMemoryResult allocate_device_memory(
       CUcontext context,

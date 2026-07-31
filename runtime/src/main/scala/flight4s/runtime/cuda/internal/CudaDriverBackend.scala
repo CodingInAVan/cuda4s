@@ -27,6 +27,12 @@ private[flight4s] final case class NativeCudaResourceResult(
     status: NativeCudaDriverStatus
 )
 
+private[flight4s] final case class NativeCudaPinnedAllocationResult(
+    handle: Long,
+    storage: ByteBuffer,
+    status: NativeCudaDriverStatus
+)
+
 private[flight4s] trait CudaDriverBackend:
   def retainPrimaryContext(
       deviceOrdinal: Int
@@ -72,6 +78,16 @@ private[flight4s] trait CudaDriverBackend:
   def synchronizeStream(
       contextHandle: Long,
       streamHandle: Long
+  ): NativeCudaDriverStatus
+
+  def allocatePinnedMemory(
+      contextHandle: Long,
+      sizeBytes: Long
+  ): NativeCudaPinnedAllocationResult
+
+  def freePinnedMemory(
+      contextHandle: Long,
+      hostAddress: Long
   ): NativeCudaDriverStatus
 
   def allocateDeviceMemory(
@@ -189,6 +205,26 @@ private[flight4s] object NativeCudaDriver extends CudaDriverBackend:
       )
     )
 
+  override def allocatePinnedMemory(
+      contextHandle: Long,
+      sizeBytes: Long
+  ): NativeCudaPinnedAllocationResult =
+    val result = CudaNativeBindings.allocatePinnedMemory(
+      contextHandle,
+      sizeBytes
+    )
+    NativeCudaPinnedAllocationResult(
+      handle = result.handle(),
+      storage = result.storage(),
+      status = status(result)
+    )
+
+  override def freePinnedMemory(
+      contextHandle: Long,
+      hostAddress: Long
+  ): NativeCudaDriverStatus =
+    status(CudaNativeBindings.freePinnedMemory(contextHandle, hostAddress))
+
   override def allocateDeviceMemory(
       contextHandle: Long,
       sizeBytes: Long
@@ -247,6 +283,17 @@ private[flight4s] object NativeCudaDriver extends CudaDriverBackend:
 
   private def status(
       result: NativeCudaDriverResult
+  ): NativeCudaDriverStatus =
+    NativeCudaDriverStatus(
+      resultCode = result.resultCode(),
+      resultName = decode(result.resultNameUtf8()),
+      resultDescription = decode(result.resultDescriptionUtf8()),
+      infoLog = decode(result.infoLogUtf8()),
+      errorLog = decode(result.errorLogUtf8())
+    )
+
+  private def status(
+      result: NativeCudaPinnedMemoryResult
   ): NativeCudaDriverStatus =
     NativeCudaDriverStatus(
       resultCode = result.resultCode(),
