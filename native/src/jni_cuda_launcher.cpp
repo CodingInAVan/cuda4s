@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "flight4s/cuda/cuda_launcher.hpp"
+#include "jni_direct_buffer.hpp"
 #include "jni_cuda_result.hpp"
 #include "jni_environment.hpp"
 
@@ -40,23 +41,22 @@ class CudaLaunchJniAdapter final {
         argument_storage,
         argument_offsets,
         argument_descriptor_codes);
-    validate_exact_buffer_view(argument_storage);
+    const auto storage = flight4s::jni::DirectBufferView::require_exact(
+        environment_,
+        argument_storage,
+        "argument storage");
     if (has_exception()) {
-      return 0;
+      return nullptr;
     }
 
-    void* storage =
-        environment_->GetDirectBufferAddress(argument_storage);
-    const jlong storage_size =
-        environment_->GetDirectBufferCapacity(argument_storage);
     auto offsets = read_offsets(argument_offsets);
     if (has_exception()) {
-      return 0;
+      return nullptr;
     }
     auto descriptor_codes =
         read_descriptor_codes(argument_descriptor_codes);
     if (has_exception()) {
-      return 0;
+      return nullptr;
     }
 
     const flight4s::cuda::CudaLaunchRequest request{
@@ -80,8 +80,8 @@ class CudaLaunchJniAdapter final {
             cluster_z,
         },
         {
-            storage,
-            storage_size,
+            storage.data(),
+            storage.size_bytes(),
             offsets.data(),
             offsets.size(),
             descriptor_codes.data(),
@@ -110,39 +110,6 @@ class CudaLaunchJniAdapter final {
 
   [[nodiscard]] bool has_exception() const noexcept {
     return environment_->ExceptionCheck() == JNI_TRUE;
-  }
-
-  void validate_exact_buffer_view(jobject buffer) const {
-    jclass buffer_class = environment_->GetObjectClass(buffer);
-    if (buffer_class == nullptr) {
-      return;
-    }
-    const jmethodID position_method =
-        environment_->GetMethodID(buffer_class, "position", "()I");
-    const jmethodID limit_method =
-        environment_->GetMethodID(buffer_class, "limit", "()I");
-    const jmethodID capacity_method =
-        environment_->GetMethodID(buffer_class, "capacity", "()I");
-    if (position_method == nullptr || limit_method == nullptr ||
-        capacity_method == nullptr) {
-      environment_->DeleteLocalRef(buffer_class);
-      return;
-    }
-
-    const jint position =
-        environment_->CallIntMethod(buffer, position_method);
-    const jint limit =
-        environment_->CallIntMethod(buffer, limit_method);
-    const jint capacity =
-        environment_->CallIntMethod(buffer, capacity_method);
-    environment_->DeleteLocalRef(buffer_class);
-    if (has_exception()) {
-      return;
-    }
-    if (position != 0 || limit != capacity) {
-      throw std::invalid_argument(
-          "argument storage must have position 0 and limit equal to capacity");
-    }
   }
 
   [[nodiscard]] std::vector<std::int32_t> read_offsets(

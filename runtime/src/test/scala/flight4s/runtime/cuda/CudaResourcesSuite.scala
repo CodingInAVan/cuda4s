@@ -1,7 +1,8 @@
 package flight4s.runtime.cuda
 
+import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
-import scala.collection.mutable.ArrayBuffer
+import scala.collection.mutable.{ArrayBuffer, HashMap}
 
 import munit.FunSuite
 
@@ -116,6 +117,101 @@ class CudaResourcesSuite extends FunSuite:
 
     context.close()
     intercept[IllegalStateException](context.load(fixture.artifact))
+
+  test("typed device buffers copy exact host arrays"):
+    val backend = RecordingBackend()
+    val context = openedContext(backend)
+    val buffer = context.allocate[Float](4).toOption.get
+    val values = Array(1.25f, -2.5f, 3.75f, 8.0f)
+
+    intercept[IllegalArgumentException](context.allocate[Float](0))
+    assertEquals(buffer.elementCount, 4)
+    assertEquals(buffer.sizeBytes, 16L)
+    assertEquals(buffer.valueType.cudaName, "float")
+    assert(buffer.isOpen)
+    assertEquals(buffer.copyFrom(values), Right(()))
+    assertEquals(
+      buffer.copyToArray().toOption.get.toSeq,
+      values.toSeq
+    )
+
+    intercept[IllegalArgumentException](
+      buffer.copyFrom(Array(1.0f))
+    )
+
+    buffer.close()
+    assert(!buffer.isOpen)
+    intercept[IllegalStateException](buffer.copyToArray())
+    context.close()
+
+  test("context closes modules and buffers in reverse creation order"):
+    val backend = RecordingBackend()
+    val context = openedContext(backend)
+    context.allocate[Int](2).toOption.get
+    context.load(generatedFixture("betweenBuffers").artifact).toOption.get
+    context.allocate[Float](2).toOption.get
+
+    context.close()
+
+    assertEquals(
+      backend.events.filter { event =>
+        event.startsWith("free:") || event.startsWith("unload:")
+      }.toVector,
+      Vector(
+        "free:100:1001",
+        "unload:100:200",
+        "free:100:1000"
+      )
+    )
+
+  test("device memory failures remain structured and retryable"):
+    val backend = RecordingBackend()
+    val context = openedContext(backend)
+    backend.allocateStatus =
+      failureStatus("CUDA_ERROR_OUT_OF_MEMORY")
+
+    val allocationFailure =
+      context.allocate[Double](16).swap.toOption.get
+
+    assertEquals(
+      allocationFailure.operation,
+      "CUDA device allocation of 128 bytes"
+    )
+    assertEquals(
+      allocationFailure.resultName,
+      "CUDA_ERROR_OUT_OF_MEMORY"
+    )
+
+    backend.allocateStatus = successStatus
+    val buffer = context.allocate[Int](2).toOption.get
+    backend.hostToDeviceStatus =
+      failureStatus("CUDA_ERROR_INVALID_VALUE")
+
+    val copyFailure =
+      buffer.copyFrom(Array(1, 2)).swap.toOption.get
+
+    assertEquals(copyFailure.operation, "CUDA host-to-device copy")
+
+    backend.hostToDeviceStatus = successStatus
+    backend.deviceToHostStatus =
+      failureStatus("CUDA_ERROR_INVALID_VALUE")
+
+    val readFailure =
+      buffer.copyToArray().swap.toOption.get
+
+    assertEquals(readFailure.operation, "CUDA device-to-host copy")
+
+    backend.deviceToHostStatus = successStatus
+    backend.freeStatus =
+      failureStatus("CUDA_ERROR_INVALID_CONTEXT")
+    val exception = intercept[CudaDriverException](buffer.close())
+
+    assertEquals(exception.failure.operation, "CUDA device memory free")
+    assert(buffer.isOpen)
+
+    backend.freeStatus = successStatus
+    context.close()
+    assert(!buffer.isOpen)
 
   test("typed function submits its matching invocation"):
     val backend = RecordingBackend()
@@ -357,7 +453,13 @@ class CudaResourcesSuite extends FunSuite:
     var resolveStatus: NativeCudaDriverStatus = successStatus
     var releaseStatus: NativeCudaDriverStatus = successStatus
     var launchStatus: NativeCudaDriverStatus = successStatus
+    var allocateStatus: NativeCudaDriverStatus = successStatus
+    var freeStatus: NativeCudaDriverStatus = successStatus
+    var hostToDeviceStatus: NativeCudaDriverStatus = successStatus
+    var deviceToHostStatus: NativeCudaDriverStatus = successStatus
     private var nextModuleHandle = 200L
+    private var nextDeviceAddress = 1000L
+    private val memory = HashMap.empty[Long, Array[Byte]]
 
     override def retainPrimaryContext(
         deviceOrdinal: Int
@@ -418,3 +520,46 @@ class CudaResourcesSuite extends FunSuite:
         s"launch:$contextHandle:$functionHandle:$streamHandle:" +
           s"${request.gridX}:${request.blockX}"
       launchStatus
+
+    override def allocateDeviceMemory(
+        contextHandle: Long,
+        sizeBytes: Long
+    ): NativeCudaResourceResult =
+      events += s"allocate:$contextHandle:$sizeBytes"
+      val address = nextDeviceAddress
+      nextDeviceAddress += 1
+      if allocateStatus.succeeded then
+        memory(address) = new Array[Byte](sizeBytes.toInt)
+      NativeCudaResourceResult(
+        handle = if allocateStatus.succeeded then address else 0L,
+        status = allocateStatus
+      )
+
+    override def freeDeviceMemory(
+        contextHandle: Long,
+        deviceAddress: Long
+    ): NativeCudaDriverStatus =
+      events += s"free:$contextHandle:$deviceAddress"
+      if freeStatus.succeeded then memory.remove(deviceAddress)
+      freeStatus
+
+    override def copyHostToDevice(
+        contextHandle: Long,
+        deviceAddress: Long,
+        source: ByteBuffer
+    ): NativeCudaDriverStatus =
+      events += s"copyHtoD:$contextHandle:$deviceAddress"
+      if hostToDeviceStatus.succeeded then
+        val bytes = memory(deviceAddress)
+        source.duplicate().get(bytes)
+      hostToDeviceStatus
+
+    override def copyDeviceToHost(
+        contextHandle: Long,
+        deviceAddress: Long,
+        destination: ByteBuffer
+    ): NativeCudaDriverStatus =
+      events += s"copyDtoH:$contextHandle:$deviceAddress"
+      if deviceToHostStatus.succeeded then
+        destination.duplicate().put(memory(deviceAddress))
+      deviceToHostStatus

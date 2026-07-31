@@ -1,10 +1,13 @@
 package flight4s.runtime.cuda
 
-import flight4s.core.abi.NativeLaunchRequest
+import java.nio.{ByteBuffer, ByteOrder}
+
+import flight4s.core.abi.{DeviceAddress, NativeLaunchRequest}
 import flight4s.core.codegen.GeneratedKernel
 import flight4s.core.compiler.{ComputeCapability, NvrtcArtifact}
-import flight4s.core.ir.{KernelInvocation, KernelSignature}
+import flight4s.core.ir.{DeviceBuffer, KernelInvocation, KernelSignature}
 import flight4s.core.launch.LaunchConfig
+import flight4s.core.types.CudaType
 import flight4s.runtime.cuda.internal.*
 
 final case class CudaDriverFailure(
@@ -65,7 +68,7 @@ final class CudaContext private (
 ) extends AutoCloseable:
   private val lifecycleLock = new Object
   private var closed = false
-  private var modules = Vector.empty[CudaModule]
+  private var resources = Vector.empty[AutoCloseable]
 
   def isOpen: Boolean =
     lifecycleLock.synchronized(!closed)
@@ -83,7 +86,7 @@ final class CudaContext private (
         )
         val module =
           new CudaModule(this, artifact, result.handle, backend)
-        modules :+= module
+        resources :+= module
         Right(module)
       else
         Left(
@@ -94,10 +97,50 @@ final class CudaContext private (
         )
     }
 
+  def allocate[T](
+      elementCount: Int
+  )(using valueType: CudaType[T])
+      : Either[CudaDriverFailure, CudaDeviceBuffer[T]] =
+    lifecycleLock.synchronized {
+      requireOpen()
+      require(
+        elementCount > 0,
+        s"CUDA device buffer element count must be positive: $elementCount"
+      )
+      val sizeBytes =
+        Math.multiplyExact(
+          elementCount.toLong,
+          valueType.sizeBytes.toLong
+        )
+      val result = backend.allocateDeviceMemory(handle, sizeBytes)
+      if result.status.succeeded then
+        require(
+          result.handle != 0L,
+          "successful CUDA device allocation returned a null address"
+        )
+        val buffer = new CudaDeviceBuffer(
+          context = this,
+          valueType = valueType,
+          elementCount = elementCount,
+          sizeBytes = sizeBytes,
+          handle = result.handle,
+          backend = backend
+        )
+        resources :+= buffer
+        Right(buffer)
+      else
+        Left(
+          CudaDriverFailure.fromStatus(
+            s"CUDA device allocation of $sizeBytes bytes",
+            result.status
+          )
+        )
+    }
+
   override def close(): Unit =
     lifecycleLock.synchronized {
       if !closed then
-        modules.reverse.foreach(_.close())
+        resources.reverse.foreach(_.close())
         val status = backend.releasePrimaryContext(deviceOrdinal)
         if !status.succeeded then
           throw CudaDriverException(
@@ -116,8 +159,8 @@ final class CudaContext private (
     if closed then
       throw IllegalStateException("CUDA context is closed")
 
-  private[cuda] def unregister(module: CudaModule): Unit =
-    modules = modules.filterNot(_ eq module)
+  private[cuda] def unregister(resource: AutoCloseable): Unit =
+    resources = resources.filterNot(_ eq resource)
 
   private[flight4s] def nativeHandle: Long =
     lifecycleLock.synchronized {
@@ -163,6 +206,118 @@ object CudaContext:
           result.status
         )
       )
+
+final class CudaDeviceBuffer[T] private[cuda] (
+    val context: CudaContext,
+    val valueType: CudaType[T],
+    val elementCount: Int,
+    val sizeBytes: Long,
+    private val handle: Long,
+    private val backend: CudaDriverBackend
+) extends DeviceBuffer[T],
+      AutoCloseable:
+  private var closed = false
+
+  def isOpen: Boolean =
+    context.synchronizedLifecycle(!closed && context.isOpen)
+
+  def copyFrom(
+      values: Array[T]
+  )(using codec: CudaHostCodec[T]): Either[CudaDriverFailure, Unit] =
+    requireHostCodec(codec)
+    require(
+      values.length == elementCount,
+      s"host element count ${values.length} does not match " +
+        s"device buffer element count $elementCount"
+    )
+    requireWholeBufferHostCopy()
+    val source = codec.encode(values)
+    context.synchronizedLifecycle {
+      requireOpen()
+      copyResult(
+        "CUDA host-to-device copy",
+        backend.copyHostToDevice(
+          context.nativeHandle,
+          handle,
+          source
+        )
+      )
+    }
+
+  def copyToArray()(using
+      codec: CudaHostCodec[T]
+  ): Either[CudaDriverFailure, Array[T]] =
+    requireHostCodec(codec)
+    requireWholeBufferHostCopy()
+    val destination = ByteBuffer
+      .allocateDirect(sizeBytes.toInt)
+      .order(ByteOrder.nativeOrder())
+    context.synchronizedLifecycle {
+      requireOpen()
+      val status = backend.copyDeviceToHost(
+        context.nativeHandle,
+        handle,
+        destination
+      )
+      if status.succeeded then
+        Right(codec.decode(destination, elementCount))
+      else
+        Left(
+          CudaDriverFailure.fromStatus(
+            "CUDA device-to-host copy",
+            status
+          )
+        )
+    }
+
+  override def close(): Unit =
+    context.synchronizedLifecycle {
+      if !closed then
+        context.requireOpen()
+        val status =
+          backend.freeDeviceMemory(context.nativeHandle, handle)
+        if !status.succeeded then
+          throw CudaDriverException(
+            CudaDriverFailure.fromStatus(
+              "CUDA device memory free",
+              status
+            )
+          )
+        closed = true
+        context.unregister(this)
+    }
+
+  override private[flight4s] def deviceAddress: DeviceAddress =
+    context.synchronizedLifecycle {
+      requireOpen()
+      DeviceAddress.fromRaw(handle)
+    }
+
+  private def requireOpen(): Unit =
+    context.requireOpen()
+    if closed then
+      throw IllegalStateException("CUDA device buffer is closed")
+
+  private def requireHostCodec(codec: CudaHostCodec[T]): Unit =
+    require(
+      codec.cudaType eq valueType,
+      s"host codec ${codec.cudaType.cudaName} does not match " +
+        s"device buffer type ${valueType.cudaName}"
+    )
+
+  private def requireWholeBufferHostCopy(): Unit =
+    require(
+      sizeBytes <= Int.MaxValue,
+      s"whole-buffer host copies require at most ${Int.MaxValue} bytes: " +
+        sizeBytes
+    )
+
+  private def copyResult(
+      operation: String,
+      status: NativeCudaDriverStatus
+  ): Either[CudaDriverFailure, Unit] =
+    if status.succeeded then Right(())
+    else Left(CudaDriverFailure.fromStatus(operation, status))
 
 final class CudaModule private[cuda] (
     val context: CudaContext,

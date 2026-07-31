@@ -43,6 +43,11 @@ struct CudaFunctionResult {
   CUfunction function;
 };
 
+struct CudaDeviceMemoryResult {
+  CudaDriverStatus status;
+  CUdeviceptr address;
+};
+
 class CudaDriver final {
  public:
   [[nodiscard]] CudaContextResult retain_primary_context(
@@ -63,6 +68,26 @@ class CudaDriver final {
       CUcontext context,
       CUmodule module,
       const std::string& name) const;
+
+  [[nodiscard]] CudaDeviceMemoryResult allocate_device_memory(
+      CUcontext context,
+      std::uint64_t size_bytes) const;
+
+  [[nodiscard]] CudaDriverStatus free_device_memory(
+      CUcontext context,
+      CUdeviceptr address) const;
+
+  [[nodiscard]] CudaDriverStatus copy_host_to_device(
+      CUcontext context,
+      CUdeviceptr destination,
+      const void* source,
+      std::uint64_t size_bytes) const;
+
+  [[nodiscard]] CudaDriverStatus copy_device_to_host(
+      CUcontext context,
+      void* destination,
+      CUdeviceptr source,
+      std::uint64_t size_bytes) const;
 };
 
 }  // namespace flight4s::cuda

@@ -85,6 +85,7 @@ add_library(
   SHARED
   src/cuda_launcher.cpp
   src/jni_cuda_result.cpp
+  src/jni_direct_buffer.cpp
   src/jni_environment.cpp
   src/jni_cuda_launcher.cpp
   src/jni_cuda_driver.cpp
