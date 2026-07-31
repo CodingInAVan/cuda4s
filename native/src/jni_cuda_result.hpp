@@ -19,6 +19,10 @@ class CudaJniResultFactory final {
       const cuda::CudaDriverStatus& status,
       jlong handle = 0) const;
 
+  [[nodiscard]] jobject pinned_memory_result(
+      const cuda::CudaPinnedMemoryResult& result,
+      jlong size_bytes) const;
+
  private:
   [[nodiscard]] bool has_exception() const noexcept;
   [[nodiscard]] jbyteArray byte_array(const std::string& value) const;

@@ -147,6 +147,61 @@ final class CudaContext private (
         )
     }
 
+  def allocatePinned[T](
+      elementCount: Int
+  )(using valueType: CudaType[T])
+      : Either[CudaDriverFailure, CudaPinnedBuffer[T]] =
+    lifecycleLock.synchronized {
+      requireOpen()
+      require(
+        elementCount > 0,
+        s"CUDA pinned buffer element count must be positive: $elementCount"
+      )
+      val sizeBytes = Math.multiplyExact(
+        elementCount.toLong,
+        valueType.sizeBytes.toLong
+      )
+      require(
+        sizeBytes <= Int.MaxValue,
+        s"CUDA pinned buffers require at most ${Int.MaxValue} bytes: " +
+          sizeBytes
+      )
+      val result = backend.allocatePinnedMemory(handle, sizeBytes)
+      if result.status.succeeded then
+        require(
+          result.handle != 0L,
+          "successful CUDA pinned allocation returned a null address"
+        )
+        require(
+          result.storage != null && result.storage.isDirect,
+          "successful CUDA pinned allocation returned invalid storage"
+        )
+        require(
+          result.storage.position() == 0 &&
+            result.storage.limit() == sizeBytes.toInt &&
+            result.storage.capacity() == sizeBytes.toInt,
+          "successful CUDA pinned allocation returned an inexact view"
+        )
+        val buffer = new CudaPinnedBuffer(
+          context = this,
+          valueType = valueType,
+          elementCount = elementCount,
+          sizeBytes = sizeBytes,
+          handle = result.handle,
+          storage = result.storage.order(ByteOrder.nativeOrder()),
+          backend = backend
+        )
+        resources :+= buffer
+        Right(buffer)
+      else
+        Left(
+          CudaDriverFailure.fromStatus(
+            s"CUDA pinned allocation of $sizeBytes bytes",
+            result.status
+          )
+        )
+    }
+
   def createStream(
       mode: CudaStreamMode = CudaStreamMode.NonBlocking
   ): Either[CudaDriverFailure, CudaStream] =
@@ -303,6 +358,80 @@ final class CudaStream private[cuda] (
       handle
     }
 
+final class CudaPinnedBuffer[T] private[cuda] (
+    val context: CudaContext,
+    val valueType: CudaType[T],
+    val elementCount: Int,
+    val sizeBytes: Long,
+    private val handle: Long,
+    private val storage: ByteBuffer,
+    private val backend: CudaDriverBackend
+) extends AutoCloseable:
+  private var closed = false
+
+  def isOpen: Boolean =
+    context.synchronizedLifecycle(!closed && context.isOpen)
+
+  def copyFrom(
+      values: Array[T]
+  )(using codec: CudaHostCodec[T]): Unit =
+    requireHostCodec(codec)
+    require(
+      values.length == elementCount,
+      s"host element count ${values.length} does not match " +
+        s"pinned buffer element count $elementCount"
+    )
+    context.synchronizedLifecycle {
+      requireOpen()
+      codec.encodeInto(values, storage)
+    }
+
+  def toArray(using codec: CudaHostCodec[T]): Array[T] =
+    requireHostCodec(codec)
+    context.synchronizedLifecycle {
+      requireOpen()
+      codec.decode(storage, elementCount)
+    }
+
+  override def close(): Unit =
+    context.synchronizedLifecycle {
+      if !closed then
+        context.requireOpen()
+        val status = backend.freePinnedMemory(
+          context.nativeHandle,
+          handle
+        )
+        if !status.succeeded then
+          throw CudaDriverException(
+            CudaDriverFailure.fromStatus(
+              "CUDA pinned memory free",
+              status
+            )
+          )
+        closed = true
+        context.unregister(this)
+    }
+
+  private[cuda] def requireOpen(): Unit =
+    context.requireOpen()
+    if closed then
+      throw IllegalStateException("CUDA pinned buffer is closed")
+
+  private[cuda] def transferView: ByteBuffer =
+    context.synchronizedLifecycle {
+      requireOpen()
+      val view = storage.duplicate().order(ByteOrder.nativeOrder())
+      view.clear()
+      view
+    }
+
+  private def requireHostCodec(codec: CudaHostCodec[T]): Unit =
+    require(
+      codec.cudaType eq valueType,
+      s"host codec ${codec.cudaType.cudaName} does not match " +
+        s"pinned buffer type ${valueType.cudaName}"
+    )
+
 final class CudaDeviceBuffer[T] private[cuda] (
     val context: CudaContext,
     val valueType: CudaType[T],
@@ -340,6 +469,23 @@ final class CudaDeviceBuffer[T] private[cuda] (
       )
     }
 
+  def copyFrom(
+      source: CudaPinnedBuffer[T]
+  ): Either[CudaDriverFailure, Unit] =
+    requirePinnedBuffer(source)
+    context.synchronizedLifecycle {
+      requireOpen()
+      source.requireOpen()
+      copyResult(
+        "CUDA pinned host-to-device copy",
+        backend.copyHostToDevice(
+          context.nativeHandle,
+          handle,
+          source.transferView
+        )
+      )
+    }
+
   def copyToArray()(using
       codec: CudaHostCodec[T]
   ): Either[CudaDriverFailure, Array[T]] =
@@ -364,6 +510,23 @@ final class CudaDeviceBuffer[T] private[cuda] (
             status
           )
         )
+    }
+
+  def copyTo(
+      destination: CudaPinnedBuffer[T]
+  ): Either[CudaDriverFailure, Unit] =
+    requirePinnedBuffer(destination)
+    context.synchronizedLifecycle {
+      requireOpen()
+      destination.requireOpen()
+      copyResult(
+        "CUDA device-to-pinned-host copy",
+        backend.copyDeviceToHost(
+          context.nativeHandle,
+          handle,
+          destination.transferView
+        )
+      )
     }
 
   override def close(): Unit =
@@ -406,6 +569,22 @@ final class CudaDeviceBuffer[T] private[cuda] (
       sizeBytes <= Int.MaxValue,
       s"whole-buffer host copies require at most ${Int.MaxValue} bytes: " +
         sizeBytes
+    )
+
+  private def requirePinnedBuffer(buffer: CudaPinnedBuffer[T]): Unit =
+    require(
+      buffer.context eq context,
+      "CUDA pinned and device buffers must belong to the same context"
+    )
+    require(
+      buffer.valueType eq valueType,
+      s"pinned buffer type ${buffer.valueType.cudaName} does not match " +
+        s"device buffer type ${valueType.cudaName}"
+    )
+    require(
+      buffer.elementCount == elementCount &&
+        buffer.sizeBytes == sizeBytes,
+      "CUDA pinned and device buffer sizes must match"
     )
 
   private def copyResult(

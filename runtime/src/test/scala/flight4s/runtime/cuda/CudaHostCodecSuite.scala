@@ -1,6 +1,6 @@
 package flight4s.runtime.cuda
 
-import java.nio.ByteOrder
+import java.nio.{ByteBuffer, ByteOrder}
 
 import munit.FunSuite
 
@@ -75,6 +75,20 @@ class CudaHostCodecSuite extends FunSuite:
       bytes.duplicate().order(ByteOrder.nativeOrder()).getInt(),
       0x01020304
     )
+
+  test("host codecs can reuse exact direct destination storage"):
+    val codec = summon[CudaHostCodec[Int]]
+    val destination = ByteBuffer
+      .allocateDirect(8)
+      .order(ByteOrder.nativeOrder())
+
+    codec.encodeInto(Array(11, 22), destination)
+
+    assertEquals(destination.position(), 0)
+    assertEquals(destination.limit(), 8)
+    val values = destination.duplicate().order(ByteOrder.nativeOrder())
+    assertEquals(values.getInt(), 11)
+    assertEquals(values.getInt(), 22)
 
   private def assertRoundTrip[T](
       values: Array[T]

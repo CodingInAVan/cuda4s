@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <exception>
+#include <limits>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -132,6 +133,44 @@ class CudaDriverJniAdapter final {
     return results_.driver_result(status);
   }
 
+  [[nodiscard]] jobject allocate_pinned_memory(
+      jlong context_handle,
+      jlong size_bytes) const {
+    if (size_bytes <= 0 ||
+        size_bytes > std::numeric_limits<jint>::max()) {
+      throw std::invalid_argument(
+          "CUDA pinned allocation size must be positive and fit "
+          "in a JVM direct buffer");
+    }
+    const auto context =
+        from_java_handle<CUcontext>(context_handle);
+    const auto result = driver_.allocate_pinned_memory(
+        context,
+        static_cast<std::uint64_t>(size_bytes));
+    try {
+      auto java_result =
+          results_.pinned_memory_result(result, size_bytes);
+      if (java_result == nullptr && result.address != nullptr) {
+        release_pinned_after_jni_failure(context, result.address);
+      }
+      return java_result;
+    } catch (...) {
+      if (result.address != nullptr) {
+        release_pinned_after_jni_failure(context, result.address);
+      }
+      throw;
+    }
+  }
+
+  [[nodiscard]] jobject free_pinned_memory(
+      jlong context_handle,
+      jlong host_address) const {
+    const auto status = driver_.free_pinned_memory(
+        from_java_handle<CUcontext>(context_handle),
+        from_java_handle<void*>(host_address));
+    return results_.driver_result(status);
+  }
+
   [[nodiscard]] jobject allocate_device_memory(
       jlong context_handle,
       jlong size_bytes) const {
@@ -197,6 +236,15 @@ class CudaDriverJniAdapter final {
  private:
   [[nodiscard]] bool has_exception() const noexcept {
     return environment_->ExceptionCheck() == JNI_TRUE;
+  }
+
+  void release_pinned_after_jni_failure(
+      CUcontext context,
+      void* address) const noexcept {
+    try {
+      static_cast<void>(driver_.free_pinned_memory(context, address));
+    } catch (...) {
+    }
   }
 
   [[nodiscard]] std::vector<std::uint8_t> read_bytes(
@@ -379,6 +427,46 @@ Java_flight4s_runtime_cuda_internal_CudaNativeBindings_synchronizeStream(
   try {
     return CudaDriverJniAdapter(environment)
         .synchronize_stream(context_handle, stream_handle);
+  } catch (const std::invalid_argument& error) {
+    jni.throw_illegal_argument(error.what());
+  } catch (const std::bad_alloc& error) {
+    jni.throw_out_of_memory(error.what());
+  } catch (const std::exception& error) {
+    jni.throw_runtime_exception(error.what());
+  }
+  return nullptr;
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_flight4s_runtime_cuda_internal_CudaNativeBindings_allocatePinnedMemory(
+    JNIEnv* environment,
+    jclass,
+    jlong context_handle,
+    jlong size_bytes) {
+  const flight4s::jni::JniEnvironment jni(environment);
+  try {
+    return CudaDriverJniAdapter(environment)
+        .allocate_pinned_memory(context_handle, size_bytes);
+  } catch (const std::invalid_argument& error) {
+    jni.throw_illegal_argument(error.what());
+  } catch (const std::bad_alloc& error) {
+    jni.throw_out_of_memory(error.what());
+  } catch (const std::exception& error) {
+    jni.throw_runtime_exception(error.what());
+  }
+  return nullptr;
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_flight4s_runtime_cuda_internal_CudaNativeBindings_freePinnedMemory(
+    JNIEnv* environment,
+    jclass,
+    jlong context_handle,
+    jlong host_address) {
+  const flight4s::jni::JniEnvironment jni(environment);
+  try {
+    return CudaDriverJniAdapter(environment)
+        .free_pinned_memory(context_handle, host_address);
   } catch (const std::invalid_argument& error) {
     jni.throw_illegal_argument(error.what());
   } catch (const std::bad_alloc& error) {

@@ -2,6 +2,7 @@
 
 #include <cuda.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <fstream>
@@ -48,6 +49,7 @@ int main(int argument_count, char** arguments) {
   CUcontext context = nullptr;
   CUmodule module = nullptr;
   CUstream stream = nullptr;
+  void* pinned_memory = nullptr;
   CUdeviceptr memory = 0;
   bool retained = false;
 
@@ -87,7 +89,20 @@ int main(int argument_count, char** arguments) {
 
     const std::array<std::int32_t, 4> host_source{
         11, 22, 33, 44};
-    std::array<std::int32_t, 4> host_destination{};
+    const auto pinned_result = driver.allocate_pinned_memory(
+        context,
+        sizeof(host_source));
+    require_success(
+        pinned_result.status,
+        "allocate pinned memory");
+    pinned_memory = pinned_result.address;
+    if (pinned_memory == nullptr) {
+      throw std::runtime_error(
+          "successful pinned allocation returned null");
+    }
+    auto* pinned_values =
+        static_cast<std::int32_t*>(pinned_memory);
+    std::copy(host_source.begin(), host_source.end(), pinned_values);
     const auto memory_result = driver.allocate_device_memory(
         context,
         sizeof(host_source));
@@ -104,17 +119,21 @@ int main(int argument_count, char** arguments) {
         driver.copy_host_to_device(
             context,
             memory,
-            host_source.data(),
+            pinned_memory,
             sizeof(host_source)),
         "copy host to device");
+    std::fill(pinned_values, pinned_values + host_source.size(), 0);
     require_success(
         driver.copy_device_to_host(
             context,
-            host_destination.data(),
+            pinned_memory,
             memory,
-            sizeof(host_destination)),
+            sizeof(host_source)),
         "copy device to host");
-    if (host_destination != host_source) {
+    if (!std::equal(
+            host_source.begin(),
+            host_source.end(),
+            pinned_values)) {
       throw std::runtime_error(
           "device-memory copy round trip did not preserve bytes");
     }
@@ -164,6 +183,10 @@ int main(int argument_count, char** arguments) {
         "free device memory");
     memory = 0;
     require_success(
+        driver.free_pinned_memory(context, pinned_memory),
+        "free pinned memory");
+    pinned_memory = nullptr;
+    require_success(
         driver.destroy_stream(context, stream),
         "destroy stream");
     stream = nullptr;
@@ -176,6 +199,10 @@ int main(int argument_count, char** arguments) {
     if (memory != 0 && context != nullptr) {
       static_cast<void>(
           driver.free_device_memory(context, memory));
+    }
+    if (pinned_memory != nullptr && context != nullptr) {
+      static_cast<void>(
+          driver.free_pinned_memory(context, pinned_memory));
     }
     if (module != nullptr && context != nullptr) {
       static_cast<void>(driver.unload_module(context, module));

@@ -1,6 +1,6 @@
 package flight4s.runtime.cuda
 
-import java.nio.ByteBuffer
+import java.nio.{ByteBuffer, ByteOrder}
 import java.nio.charset.StandardCharsets
 import scala.collection.mutable.{ArrayBuffer, HashMap}
 
@@ -145,6 +145,65 @@ class CudaResourcesSuite extends FunSuite:
     intercept[IllegalStateException](buffer.copyToArray())
     context.close()
 
+  test("typed pinned buffers reuse exact native host storage"):
+    val backend = RecordingBackend()
+    val context = openedContext(backend)
+    val buffer = context.allocatePinned[Int](4).toOption.get
+    val first = Array(1, 2, 3, 4)
+    val second = Array(5, 6, 7, 8)
+
+    intercept[IllegalArgumentException](context.allocatePinned[Int](0))
+    assertEquals(buffer.elementCount, 4)
+    assertEquals(buffer.sizeBytes, 16L)
+    assertEquals(buffer.valueType.cudaName, "int")
+    assert(buffer.isOpen)
+    assert(buffer.transferView.isDirect)
+    assertEquals(buffer.transferView.order(), ByteOrder.nativeOrder())
+
+    buffer.copyFrom(first)
+    assertEquals(buffer.toArray.toSeq, first.toSeq)
+    buffer.copyFrom(second)
+    assertEquals(buffer.toArray.toSeq, second.toSeq)
+
+    intercept[IllegalArgumentException](buffer.copyFrom(Array(1, 2)))
+    buffer.close()
+    assert(!buffer.isOpen)
+    intercept[IllegalStateException](buffer.toArray)
+    context.close()
+
+  test("device buffers transfer through same-context pinned buffers"):
+    val backend = RecordingBackend()
+    val context = openedContext(backend)
+    val source = context.allocatePinned[Float](4).toOption.get
+    val destination = context.allocatePinned[Float](4).toOption.get
+    val mismatched = context.allocatePinned[Float](2).toOption.get
+    val device = context.allocate[Float](4).toOption.get
+    val values = Array(1.25f, -2.5f, 3.75f, 8.0f)
+
+    source.copyFrom(values)
+    assertEquals(device.copyFrom(source), Right(()))
+    assertEquals(device.copyTo(destination), Right(()))
+    assertEquals(destination.toArray.toSeq, values.toSeq)
+    intercept[IllegalArgumentException](device.copyFrom(mismatched))
+
+    source.close()
+    intercept[IllegalStateException](device.copyFrom(source))
+
+    context.close()
+
+  test("device buffers reject pinned buffers from another context"):
+    val backend = RecordingBackend()
+    val deviceContext = openedContext(backend)
+    val pinnedContext = openedContext(backend)
+    val device = deviceContext.allocate[Int](2).toOption.get
+    val pinned = pinnedContext.allocatePinned[Int](2).toOption.get
+
+    intercept[IllegalArgumentException](device.copyFrom(pinned))
+    intercept[IllegalArgumentException](device.copyTo(pinned))
+
+    deviceContext.close()
+    pinnedContext.close()
+
   test("explicit streams synchronize and close deterministically"):
     val backend = RecordingBackend()
     val context = openedContext(backend)
@@ -172,11 +231,12 @@ class CudaResourcesSuite extends FunSuite:
       )
     )
 
-  test("context closes modules, buffers, and streams in reverse order"):
+  test("context closes every child resource in reverse order"):
     val backend = RecordingBackend()
     val context = openedContext(backend)
     context.allocate[Int](2).toOption.get
     context.load(generatedFixture("betweenBuffers").artifact).toOption.get
+    context.allocatePinned[Int](2).toOption.get
     context.createStream(CudaStreamMode.Default).toOption.get
     context.allocate[Float](2).toOption.get
 
@@ -185,12 +245,14 @@ class CudaResourcesSuite extends FunSuite:
     assertEquals(
       backend.events.filter { event =>
         event.startsWith("free:") ||
+        event.startsWith("freePinned:") ||
         event.startsWith("unload:") ||
         event.startsWith("destroyStream:")
       }.toVector,
       Vector(
         "free:100:1001",
         "destroyStream:100:400",
+        "freePinned:100:2000",
         "unload:100:200",
         "free:100:1000"
       )
@@ -280,6 +342,33 @@ class CudaResourcesSuite extends FunSuite:
     backend.destroyStreamStatus = successStatus
     context.close()
     assert(!stream.isOpen)
+
+  test("pinned memory failures remain structured and retryable"):
+    val backend = RecordingBackend()
+    val context = openedContext(backend)
+    backend.allocatePinnedStatus =
+      failureStatus("CUDA_ERROR_OUT_OF_MEMORY")
+
+    val allocationFailure =
+      context.allocatePinned[Double](16).swap.toOption.get
+
+    assertEquals(
+      allocationFailure.operation,
+      "CUDA pinned allocation of 128 bytes"
+    )
+
+    backend.allocatePinnedStatus = successStatus
+    val buffer = context.allocatePinned[Int](2).toOption.get
+    backend.freePinnedStatus =
+      failureStatus("CUDA_ERROR_INVALID_CONTEXT")
+    val exception = intercept[CudaDriverException](buffer.close())
+
+    assertEquals(exception.failure.operation, "CUDA pinned memory free")
+    assert(buffer.isOpen)
+
+    backend.freePinnedStatus = successStatus
+    context.close()
+    assert(!buffer.isOpen)
 
   test("typed function submits its matching invocation"):
     val backend = RecordingBackend()
@@ -581,14 +670,18 @@ class CudaResourcesSuite extends FunSuite:
     var createStreamStatus: NativeCudaDriverStatus = successStatus
     var destroyStreamStatus: NativeCudaDriverStatus = successStatus
     var synchronizeStreamStatus: NativeCudaDriverStatus = successStatus
+    var allocatePinnedStatus: NativeCudaDriverStatus = successStatus
+    var freePinnedStatus: NativeCudaDriverStatus = successStatus
     var allocateStatus: NativeCudaDriverStatus = successStatus
     var freeStatus: NativeCudaDriverStatus = successStatus
     var hostToDeviceStatus: NativeCudaDriverStatus = successStatus
     var deviceToHostStatus: NativeCudaDriverStatus = successStatus
     private var nextModuleHandle = 200L
     private var nextStreamHandle = 400L
+    private var nextPinnedAddress = 2000L
     private var nextDeviceAddress = 1000L
     private val memory = HashMap.empty[Long, Array[Byte]]
+    private val pinnedMemory = HashMap.empty[Long, ByteBuffer]
 
     override def retainPrimaryContext(
         deviceOrdinal: Int
@@ -675,6 +768,34 @@ class CudaResourcesSuite extends FunSuite:
     ): NativeCudaDriverStatus =
       events += s"synchronizeStream:$contextHandle:$streamHandle"
       synchronizeStreamStatus
+
+    override def allocatePinnedMemory(
+        contextHandle: Long,
+        sizeBytes: Long
+    ): NativeCudaPinnedAllocationResult =
+      events += s"allocatePinned:$contextHandle:$sizeBytes"
+      val address = nextPinnedAddress
+      nextPinnedAddress += 1
+      val storage =
+        if allocatePinnedStatus.succeeded then
+          ByteBuffer
+            .allocateDirect(sizeBytes.toInt)
+            .order(ByteOrder.nativeOrder())
+        else null
+      if storage != null then pinnedMemory(address) = storage
+      NativeCudaPinnedAllocationResult(
+        handle = if allocatePinnedStatus.succeeded then address else 0L,
+        storage = storage,
+        status = allocatePinnedStatus
+      )
+
+    override def freePinnedMemory(
+        contextHandle: Long,
+        hostAddress: Long
+    ): NativeCudaDriverStatus =
+      events += s"freePinned:$contextHandle:$hostAddress"
+      if freePinnedStatus.succeeded then pinnedMemory.remove(hostAddress)
+      freePinnedStatus
 
     override def allocateDeviceMemory(
         contextHandle: Long,

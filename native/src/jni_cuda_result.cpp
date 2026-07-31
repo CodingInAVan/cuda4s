@@ -155,4 +155,101 @@ jobject CudaJniResultFactory::driver_result(
   return java_result;
 }
 
+jobject CudaJniResultFactory::pinned_memory_result(
+    const cuda::CudaPinnedMemoryResult& result,
+    jlong size_bytes) const {
+  auto result_name = byte_array(result.status.result_name);
+  if (result_name == nullptr || has_exception()) {
+    return nullptr;
+  }
+  auto result_description = byte_array(result.status.result_description);
+  if (result_description == nullptr || has_exception()) {
+    environment_->DeleteLocalRef(result_name);
+    return nullptr;
+  }
+  auto info_log = byte_array(result.status.info_log);
+  if (info_log == nullptr || has_exception()) {
+    environment_->DeleteLocalRef(result_description);
+    environment_->DeleteLocalRef(result_name);
+    return nullptr;
+  }
+  auto error_log = byte_array(result.status.error_log);
+  if (error_log == nullptr || has_exception()) {
+    environment_->DeleteLocalRef(info_log);
+    environment_->DeleteLocalRef(result_description);
+    environment_->DeleteLocalRef(result_name);
+    return nullptr;
+  }
+
+  jobject storage = nullptr;
+  if (result.status.succeeded()) {
+    if (result.address == nullptr) {
+      environment_->DeleteLocalRef(error_log);
+      environment_->DeleteLocalRef(info_log);
+      environment_->DeleteLocalRef(result_description);
+      environment_->DeleteLocalRef(result_name);
+      throw std::logic_error(
+          "successful pinned allocation returned a null address");
+    }
+    storage = environment_->NewDirectByteBuffer(
+        result.address,
+        size_bytes);
+    if (storage == nullptr || has_exception()) {
+      environment_->DeleteLocalRef(error_log);
+      environment_->DeleteLocalRef(info_log);
+      environment_->DeleteLocalRef(result_description);
+      environment_->DeleteLocalRef(result_name);
+      return nullptr;
+    }
+  }
+
+  jclass result_class = environment_->FindClass(
+      "flight4s/runtime/cuda/internal/NativeCudaPinnedMemoryResult");
+  if (result_class == nullptr) {
+    if (storage != nullptr) {
+      environment_->DeleteLocalRef(storage);
+    }
+    environment_->DeleteLocalRef(error_log);
+    environment_->DeleteLocalRef(info_log);
+    environment_->DeleteLocalRef(result_description);
+    environment_->DeleteLocalRef(result_name);
+    return nullptr;
+  }
+  const jmethodID constructor = environment_->GetMethodID(
+      result_class,
+      "<init>",
+      "(JLjava/nio/ByteBuffer;I[B[B[B[B)V");
+  if (constructor == nullptr) {
+    environment_->DeleteLocalRef(result_class);
+    if (storage != nullptr) {
+      environment_->DeleteLocalRef(storage);
+    }
+    environment_->DeleteLocalRef(error_log);
+    environment_->DeleteLocalRef(info_log);
+    environment_->DeleteLocalRef(result_description);
+    environment_->DeleteLocalRef(result_name);
+    return nullptr;
+  }
+
+  jobject java_result = environment_->NewObject(
+      result_class,
+      constructor,
+      to_java_handle(result.address),
+      storage,
+      static_cast<jint>(result.status.result_code),
+      result_name,
+      result_description,
+      info_log,
+      error_log);
+  environment_->DeleteLocalRef(result_class);
+  if (storage != nullptr) {
+    environment_->DeleteLocalRef(storage);
+  }
+  environment_->DeleteLocalRef(error_log);
+  environment_->DeleteLocalRef(info_log);
+  environment_->DeleteLocalRef(result_description);
+  environment_->DeleteLocalRef(result_name);
+  return java_result;
+}
+
 }  // namespace flight4s::jni

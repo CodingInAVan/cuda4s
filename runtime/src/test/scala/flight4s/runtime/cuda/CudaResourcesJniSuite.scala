@@ -161,12 +161,17 @@ class CudaResourcesJniSuite extends FunSuite:
         case Right(value) => value
         case Left(failure) => fail(failure.message)
       val stream = context.createStream().toOption.get
+      val leftHost = context.allocatePinned[Float](elementCount).toOption.get
+      val rightHost = context.allocatePinned[Float](elementCount).toOption.get
+      val outputHost = context.allocatePinned[Float](elementCount).toOption.get
       val leftBuffer = context.allocate[Float](elementCount).toOption.get
       val rightBuffer = context.allocate[Float](elementCount).toOption.get
       val outputBuffer = context.allocate[Float](elementCount).toOption.get
 
-      assertEquals(leftBuffer.copyFrom(leftValues), Right(()))
-      assertEquals(rightBuffer.copyFrom(rightValues), Right(()))
+      leftHost.copyFrom(leftValues)
+      rightHost.copyFrom(rightValues)
+      assertEquals(leftBuffer.copyFrom(leftHost), Right(()))
+      assertEquals(rightBuffer.copyFrom(rightHost), Right(()))
 
       val invocation = definition.bind(
         (leftBuffer, rightBuffer, outputBuffer, elementCount)
@@ -186,9 +191,10 @@ class CudaResourcesJniSuite extends FunSuite:
         case Right(()) => ()
         case Left(failure) => fail(failure.message)
 
-      val actual = outputBuffer.copyToArray() match
-        case Right(value) => value
+      outputBuffer.copyTo(outputHost) match
+        case Right(()) => ()
         case Left(failure) => fail(failure.message)
+      val actual = outputHost.toArray
       assertEquals(actual.toSeq, expected.toSeq)
     finally
       if context.isOpen then context.close()

@@ -8,6 +8,8 @@ operations:
   resources through the CUDA Driver API;
 - allocate and free device memory and perform synchronous whole-buffer
   host/device copies;
+- allocate page-locked host memory, expose an exact JNI direct-buffer view, and
+  release the native allocation;
 - create, synchronize, and destroy explicit CUDA streams;
 - validate one typed Flight4s launch request, construct CUDA's `void**` kernel
   parameter table, establish the owning context, and call `cuLaunchKernelEx`.
@@ -15,8 +17,9 @@ operations:
 The launcher restores the caller's previous current context after submission
 and does not synchronize the CUDA context or stream. Scala runtime objects own
 retained primary contexts, loaded modules, device allocations, and explicit
-streams. Events, pinned host allocations, asynchronous copies, and automatic
-in-flight lifetime tracking remain future runtime responsibilities.
+streams. They also own page-locked host allocations surfaced as internal direct
+buffers. Events, asynchronous copies, and automatic in-flight lifetime tracking
+remain future runtime responsibilities.
 
 ## Requirements
 
@@ -45,10 +48,10 @@ failure logs, and request validation.
 ## GPU Integration Tests
 
 The optional integration tests compile a small PTX kernel, exercise primary
-context/module/function, stream, and device-memory ownership, round-trip bytes
-through synchronous host/device copies, and execute ordinary and clustered
-launches through `cuLaunchKernelEx` while verifying context restoration. They
-require a CUDA device with compute capability 9.0 or newer.
+context/module/function, stream, device-memory, and pinned-host-memory
+ownership, round-trip bytes through synchronous copies, and execute ordinary
+and clustered launches through `cuLaunchKernelEx` while verifying context
+restoration. They require a CUDA device with compute capability 9.0 or newer.
 
 ```shell
 cmake -S native -B native/build \
