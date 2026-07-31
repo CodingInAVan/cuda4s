@@ -1,14 +1,17 @@
 # Flight4s CUDA Native Runtime
 
-This directory builds the internal JNI library for two coarse native
+This directory builds the internal JNI library for three coarse native
 operations:
 
 - compile one CUDA C++ source artifact to PTX with NVRTC;
+- retain CUDA primary contexts, load PTX modules, resolve functions, and unload
+  resources through the CUDA Driver API;
 - validate one typed Flight4s launch request, construct CUDA's `void**` kernel
   parameter table, and call `cuLaunchKernelEx`.
 
-The launcher does not synchronize the CUDA context or stream. Context, module,
-function, stream, and allocation ownership remain runtime responsibilities.
+The launcher does not synchronize the CUDA context or stream. Scala runtime
+objects own retained primary contexts and loaded modules; stream and allocation
+ownership remain future runtime responsibilities.
 
 ## Requirements
 
@@ -34,11 +37,12 @@ construction.
 CUDA C++ compilation, PTX retrieval, compiler-version metadata, complete
 failure logs, and request validation.
 
-## GPU Integration Test
+## GPU Integration Tests
 
-The optional integration test compiles a small PTX kernel and executes ordinary
-and clustered launches through `cuLaunchKernelEx`. It requires a CUDA device
-with compute capability 9.0 or newer.
+The optional integration tests compile a small PTX kernel, exercise primary
+context/module/function ownership, and execute ordinary and clustered launches
+through `cuLaunchKernelEx`. They require a CUDA device with compute capability
+9.0 or newer.
 
 ```shell
 cmake -S native -B native/build \
@@ -54,12 +58,11 @@ Pass the absolute native library path to the runtime test:
 
 ```shell
 sbt -Dflight4s.cuda.native.path=/absolute/path/to/flight4s_cuda \
-  "runtime/testOnly flight4s.runtime.cuda.NvrtcCompilerSuite flight4s.runtime.cuda.internal.NativeCudaLauncherSuite"
+  "runtime/testOnly flight4s.runtime.cuda.CudaResourcesJniSuite flight4s.runtime.cuda.NvrtcCompilerSuite flight4s.runtime.cuda.internal.NativeCudaLauncherSuite"
 ```
 
 Without this property, portable Scala test runs skip the JNI-dependent tests.
-Native library packaging and platform classifiers will be added with the public
-runtime resource API.
+Native library packaging and platform classifiers remain future work.
 
 ## C++ Language Standard
 
