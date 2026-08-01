@@ -59,6 +59,15 @@ void require_stream_flags(std::uint32_t flags) {
   }
 }
 
+void require_event_flags(std::uint32_t flags) {
+  constexpr std::uint32_t supported_flags =
+      CU_EVENT_BLOCKING_SYNC | CU_EVENT_DISABLE_TIMING;
+  if ((flags & ~supported_flags) != 0) {
+    throw std::invalid_argument(
+        "unsupported CUDA event flags");
+  }
+}
+
 std::size_t checked_size(
     std::uint64_t size_bytes,
     const char* description) {
@@ -307,6 +316,112 @@ CudaDriverStatus CudaDriver::synchronize_stream(
   }
   return finish_context_operation(
       cuStreamSynchronize(stream),
+      current);
+}
+
+CudaEventResult CudaDriver::create_event(
+    CUcontext context,
+    std::uint32_t flags) const {
+  require_handle(context, "CUDA context handle");
+  require_event_flags(flags);
+
+  CurrentContextScope current(context);
+  if (current.push_result() != CUDA_SUCCESS) {
+    return {make_driver_status(current.push_result()), nullptr};
+  }
+
+  CUevent event = nullptr;
+  const auto create_result = cuEventCreate(&event, flags);
+  auto status = finish_context_operation(create_result, current);
+  const bool succeeded = status.succeeded();
+  return {
+      std::move(status),
+      succeeded ? event : nullptr,
+  };
+}
+
+CudaDriverStatus CudaDriver::destroy_event(
+    CUcontext context,
+    CUevent event) const {
+  require_handle(context, "CUDA context handle");
+  require_handle(event, "CUDA event handle");
+
+  CurrentContextScope current(context);
+  if (current.push_result() != CUDA_SUCCESS) {
+    return make_driver_status(current.push_result());
+  }
+  return finish_context_operation(cuEventDestroy(event), current);
+}
+
+CudaDriverStatus CudaDriver::record_event(
+    CUcontext context,
+    CUevent event,
+    CUstream stream) const {
+  require_handle(context, "CUDA context handle");
+  require_handle(event, "CUDA event handle");
+  require_handle(stream, "CUDA stream handle");
+
+  CurrentContextScope current(context);
+  if (current.push_result() != CUDA_SUCCESS) {
+    return make_driver_status(current.push_result());
+  }
+  return finish_context_operation(
+      cuEventRecord(event, stream),
+      current);
+}
+
+CudaEventQueryResult CudaDriver::query_event(
+    CUcontext context,
+    CUevent event) const {
+  require_handle(context, "CUDA context handle");
+  require_handle(event, "CUDA event handle");
+
+  CurrentContextScope current(context);
+  if (current.push_result() != CUDA_SUCCESS) {
+    return {make_driver_status(current.push_result()), false};
+  }
+
+  const auto query_result = cuEventQuery(event);
+  if (query_result == CUDA_ERROR_NOT_READY) {
+    return {
+        finish_context_operation(CUDA_SUCCESS, current),
+        false,
+    };
+  }
+  auto status = finish_context_operation(query_result, current);
+  const bool complete = status.succeeded();
+  return {std::move(status), complete};
+}
+
+CudaDriverStatus CudaDriver::synchronize_event(
+    CUcontext context,
+    CUevent event) const {
+  require_handle(context, "CUDA context handle");
+  require_handle(event, "CUDA event handle");
+
+  CurrentContextScope current(context);
+  if (current.push_result() != CUDA_SUCCESS) {
+    return make_driver_status(current.push_result());
+  }
+  return finish_context_operation(
+      cuEventSynchronize(event),
+      current);
+}
+
+CudaDriverStatus CudaDriver::wait_for_event(
+    CUcontext context,
+    CUstream stream,
+    CUevent event) const {
+  require_handle(context, "CUDA context handle");
+  require_handle(stream, "CUDA stream handle");
+  require_handle(event, "CUDA event handle");
+
+  CurrentContextScope current(context);
+  if (current.push_result() != CUDA_SUCCESS) {
+    return make_driver_status(current.push_result());
+  }
+  return finish_context_operation(
+      cuStreamWaitEvent(stream, event, 0),
       current);
 }
 

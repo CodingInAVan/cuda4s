@@ -161,6 +161,7 @@ class CudaResourcesJniSuite extends FunSuite:
         case Right(value) => value
         case Left(failure) => fail(failure.message)
       val stream = context.createStream().toOption.get
+      val completed = context.createEvent().toOption.get
       val leftHost = context.allocatePinned[Float](elementCount).toOption.get
       val rightHost = context.allocatePinned[Float](elementCount).toOption.get
       val outputHost = context.allocatePinned[Float](elementCount).toOption.get
@@ -187,9 +188,19 @@ class CudaResourcesJniSuite extends FunSuite:
         case Right(()) => ()
         case Left(failure) => fail(failure.message)
 
-      stream.synchronize() match
+      completed.record(stream) match
         case Right(()) => ()
         case Left(failure) => fail(failure.message)
+      completed.query() match
+        case Right(_) => ()
+        case Left(failure) => fail(failure.message)
+      stream.waitFor(completed) match
+        case Right(()) => ()
+        case Left(failure) => fail(failure.message)
+      completed.synchronize() match
+        case Right(()) => ()
+        case Left(failure) => fail(failure.message)
+      assertEquals(completed.query(), Right(true))
 
       outputBuffer.copyTo(outputHost) match
         case Right(()) => ()

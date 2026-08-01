@@ -33,6 +33,11 @@ private[flight4s] final case class NativeCudaPinnedAllocationResult(
     status: NativeCudaDriverStatus
 )
 
+private[flight4s] final case class NativeCudaEventQuery(
+    complete: Boolean,
+    status: NativeCudaDriverStatus
+)
+
 private[flight4s] trait CudaDriverBackend:
   def retainPrimaryContext(
       deviceOrdinal: Int
@@ -78,6 +83,38 @@ private[flight4s] trait CudaDriverBackend:
   def synchronizeStream(
       contextHandle: Long,
       streamHandle: Long
+  ): NativeCudaDriverStatus
+
+  def createEvent(
+      contextHandle: Long,
+      flags: Int
+  ): NativeCudaResourceResult
+
+  def destroyEvent(
+      contextHandle: Long,
+      eventHandle: Long
+  ): NativeCudaDriverStatus
+
+  def recordEvent(
+      contextHandle: Long,
+      eventHandle: Long,
+      streamHandle: Long
+  ): NativeCudaDriverStatus
+
+  def queryEvent(
+      contextHandle: Long,
+      eventHandle: Long
+  ): NativeCudaEventQuery
+
+  def synchronizeEvent(
+      contextHandle: Long,
+      eventHandle: Long
+  ): NativeCudaDriverStatus
+
+  def waitForEvent(
+      contextHandle: Long,
+      streamHandle: Long,
+      eventHandle: Long
   ): NativeCudaDriverStatus
 
   def allocatePinnedMemory(
@@ -205,6 +242,68 @@ private[flight4s] object NativeCudaDriver extends CudaDriverBackend:
       )
     )
 
+  override def createEvent(
+      contextHandle: Long,
+      flags: Int
+  ): NativeCudaResourceResult =
+    resource(CudaNativeBindings.createEvent(contextHandle, flags))
+
+  override def destroyEvent(
+      contextHandle: Long,
+      eventHandle: Long
+  ): NativeCudaDriverStatus =
+    status(CudaNativeBindings.destroyEvent(contextHandle, eventHandle))
+
+  override def recordEvent(
+      contextHandle: Long,
+      eventHandle: Long,
+      streamHandle: Long
+  ): NativeCudaDriverStatus =
+    status(
+      CudaNativeBindings.recordEvent(
+        contextHandle,
+        eventHandle,
+        streamHandle
+      )
+    )
+
+  override def queryEvent(
+      contextHandle: Long,
+      eventHandle: Long
+  ): NativeCudaEventQuery =
+    val result = CudaNativeBindings.queryEvent(
+      contextHandle,
+      eventHandle
+    )
+    NativeCudaEventQuery(
+      complete = result.complete(),
+      status = status(result)
+    )
+
+  override def synchronizeEvent(
+      contextHandle: Long,
+      eventHandle: Long
+  ): NativeCudaDriverStatus =
+    status(
+      CudaNativeBindings.synchronizeEvent(
+        contextHandle,
+        eventHandle
+      )
+    )
+
+  override def waitForEvent(
+      contextHandle: Long,
+      streamHandle: Long,
+      eventHandle: Long
+  ): NativeCudaDriverStatus =
+    status(
+      CudaNativeBindings.waitForEvent(
+        contextHandle,
+        streamHandle,
+        eventHandle
+      )
+    )
+
   override def allocatePinnedMemory(
       contextHandle: Long,
       sizeBytes: Long
@@ -294,6 +393,17 @@ private[flight4s] object NativeCudaDriver extends CudaDriverBackend:
 
   private def status(
       result: NativeCudaPinnedMemoryResult
+  ): NativeCudaDriverStatus =
+    NativeCudaDriverStatus(
+      resultCode = result.resultCode(),
+      resultName = decode(result.resultNameUtf8()),
+      resultDescription = decode(result.resultDescriptionUtf8()),
+      infoLog = decode(result.infoLogUtf8()),
+      errorLog = decode(result.errorLogUtf8())
+    )
+
+  private def status(
+      result: flight4s.runtime.cuda.internal.NativeCudaEventQueryResult
   ): NativeCudaDriverStatus =
     NativeCudaDriverStatus(
       resultCode = result.resultCode(),

@@ -155,6 +155,70 @@ jobject CudaJniResultFactory::driver_result(
   return java_result;
 }
 
+jobject CudaJniResultFactory::event_query_result(
+    const cuda::CudaEventQueryResult& result) const {
+  auto result_name = byte_array(result.status.result_name);
+  if (result_name == nullptr || has_exception()) {
+    return nullptr;
+  }
+  auto result_description = byte_array(result.status.result_description);
+  if (result_description == nullptr || has_exception()) {
+    environment_->DeleteLocalRef(result_name);
+    return nullptr;
+  }
+  auto info_log = byte_array(result.status.info_log);
+  if (info_log == nullptr || has_exception()) {
+    environment_->DeleteLocalRef(result_description);
+    environment_->DeleteLocalRef(result_name);
+    return nullptr;
+  }
+  auto error_log = byte_array(result.status.error_log);
+  if (error_log == nullptr || has_exception()) {
+    environment_->DeleteLocalRef(info_log);
+    environment_->DeleteLocalRef(result_description);
+    environment_->DeleteLocalRef(result_name);
+    return nullptr;
+  }
+
+  jclass result_class = environment_->FindClass(
+      "flight4s/runtime/cuda/internal/NativeCudaEventQueryResult");
+  if (result_class == nullptr) {
+    environment_->DeleteLocalRef(error_log);
+    environment_->DeleteLocalRef(info_log);
+    environment_->DeleteLocalRef(result_description);
+    environment_->DeleteLocalRef(result_name);
+    return nullptr;
+  }
+  const jmethodID constructor = environment_->GetMethodID(
+      result_class,
+      "<init>",
+      "(ZI[B[B[B[B)V");
+  if (constructor == nullptr) {
+    environment_->DeleteLocalRef(result_class);
+    environment_->DeleteLocalRef(error_log);
+    environment_->DeleteLocalRef(info_log);
+    environment_->DeleteLocalRef(result_description);
+    environment_->DeleteLocalRef(result_name);
+    return nullptr;
+  }
+
+  jobject java_result = environment_->NewObject(
+      result_class,
+      constructor,
+      result.complete ? JNI_TRUE : JNI_FALSE,
+      static_cast<jint>(result.status.result_code),
+      result_name,
+      result_description,
+      info_log,
+      error_log);
+  environment_->DeleteLocalRef(result_class);
+  environment_->DeleteLocalRef(error_log);
+  environment_->DeleteLocalRef(info_log);
+  environment_->DeleteLocalRef(result_description);
+  environment_->DeleteLocalRef(result_name);
+  return java_result;
+}
+
 jobject CudaJniResultFactory::pinned_memory_result(
     const cuda::CudaPinnedMemoryResult& result,
     jlong size_bytes) const {

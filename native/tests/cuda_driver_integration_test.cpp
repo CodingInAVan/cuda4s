@@ -49,6 +49,7 @@ int main(int argument_count, char** arguments) {
   CUcontext context = nullptr;
   CUmodule module = nullptr;
   CUstream stream = nullptr;
+  CUevent event = nullptr;
   void* pinned_memory = nullptr;
   CUdeviceptr memory = 0;
   bool retained = false;
@@ -86,6 +87,33 @@ int main(int argument_count, char** arguments) {
     require_success(
         driver.synchronize_stream(context, stream),
         "synchronize stream");
+
+    const auto event_result = driver.create_event(
+        context,
+        CU_EVENT_DISABLE_TIMING);
+    require_success(event_result.status, "create event");
+    event = event_result.event;
+    if (event == nullptr) {
+      throw std::runtime_error(
+          "successful event creation returned null");
+    }
+    require_success(
+        driver.record_event(context, event, stream),
+        "record event");
+    const auto query_result = driver.query_event(context, event);
+    require_success(query_result.status, "query event");
+    require_success(
+        driver.wait_for_event(context, stream, event),
+        "wait for event");
+    require_success(
+        driver.synchronize_event(context, event),
+        "synchronize event");
+    const auto completed_query = driver.query_event(context, event);
+    require_success(completed_query.status, "query completed event");
+    if (!completed_query.complete) {
+      throw std::runtime_error(
+          "synchronized event did not report completion");
+    }
 
     const std::array<std::int32_t, 4> host_source{
         11, 22, 33, 44};
@@ -187,6 +215,10 @@ int main(int argument_count, char** arguments) {
         "free pinned memory");
     pinned_memory = nullptr;
     require_success(
+        driver.destroy_event(context, event),
+        "destroy event");
+    event = nullptr;
+    require_success(
         driver.destroy_stream(context, stream),
         "destroy stream");
     stream = nullptr;
@@ -206,6 +238,9 @@ int main(int argument_count, char** arguments) {
     }
     if (module != nullptr && context != nullptr) {
       static_cast<void>(driver.unload_module(context, module));
+    }
+    if (event != nullptr && context != nullptr) {
+      static_cast<void>(driver.destroy_event(context, event));
     }
     if (stream != nullptr && context != nullptr) {
       static_cast<void>(driver.destroy_stream(context, stream));

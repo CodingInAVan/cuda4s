@@ -231,6 +231,60 @@ class CudaResourcesSuite extends FunSuite:
       )
     )
 
+  test("events record query synchronize and order streams"):
+    val backend = RecordingBackend()
+    val context = openedContext(backend)
+    val producer = context.createStream().toOption.get
+    val consumer = context.createStream().toOption.get
+    val event = context.createEvent().toOption.get
+
+    assert(event.isOpen)
+    assertEquals(event.mode, CudaEventMode.Completion)
+    assertEquals(event.record(producer), Right(()))
+    assertEquals(event.query(), Right(false))
+    backend.queryEventComplete = true
+    assertEquals(event.query(), Right(true))
+    assertEquals(consumer.waitFor(event), Right(()))
+    assertEquals(event.synchronize(), Right(()))
+
+    event.close()
+    assert(!event.isOpen)
+    intercept[IllegalStateException](event.query())
+    context.close()
+
+    assertEquals(
+      backend.events.filter { operation =>
+        operation.startsWith("createEvent:") ||
+        operation.startsWith("recordEvent:") ||
+        operation.startsWith("queryEvent:") ||
+        operation.startsWith("waitForEvent:") ||
+        operation.startsWith("synchronizeEvent:") ||
+        operation.startsWith("destroyEvent:")
+      }.toVector,
+      Vector(
+        "createEvent:100:2",
+        "recordEvent:100:500:400",
+        "queryEvent:100:500",
+        "queryEvent:100:500",
+        "waitForEvent:100:401:500",
+        "synchronizeEvent:100:500",
+        "destroyEvent:100:500"
+      )
+    )
+
+  test("events reject streams from another context"):
+    val backend = RecordingBackend()
+    val eventContext = openedContext(backend)
+    val streamContext = openedContext(backend)
+    val event = eventContext.createEvent().toOption.get
+    val stream = streamContext.createStream().toOption.get
+
+    intercept[IllegalArgumentException](event.record(stream))
+    intercept[IllegalArgumentException](stream.waitFor(event))
+
+    eventContext.close()
+    streamContext.close()
+
   test("context closes every child resource in reverse order"):
     val backend = RecordingBackend()
     val context = openedContext(backend)
@@ -238,6 +292,7 @@ class CudaResourcesSuite extends FunSuite:
     context.load(generatedFixture("betweenBuffers").artifact).toOption.get
     context.allocatePinned[Int](2).toOption.get
     context.createStream(CudaStreamMode.Default).toOption.get
+    context.createEvent().toOption.get
     context.allocate[Float](2).toOption.get
 
     context.close()
@@ -247,10 +302,12 @@ class CudaResourcesSuite extends FunSuite:
         event.startsWith("free:") ||
         event.startsWith("freePinned:") ||
         event.startsWith("unload:") ||
+        event.startsWith("destroyEvent:") ||
         event.startsWith("destroyStream:")
       }.toVector,
       Vector(
         "free:100:1001",
+        "destroyEvent:100:500",
         "destroyStream:100:400",
         "freePinned:100:2000",
         "unload:100:200",
@@ -342,6 +399,62 @@ class CudaResourcesSuite extends FunSuite:
     backend.destroyStreamStatus = successStatus
     context.close()
     assert(!stream.isOpen)
+
+  test("event failures remain structured and retryable"):
+    val backend = RecordingBackend()
+    val context = openedContext(backend)
+    val stream = context.createStream().toOption.get
+    backend.createEventStatus =
+      failureStatus("CUDA_ERROR_OUT_OF_MEMORY")
+
+    val creationFailure =
+      context.createEvent().swap.toOption.get
+    assertEquals(creationFailure.operation, "CUDA event creation")
+
+    backend.createEventStatus = successStatus
+    val event = context
+      .createEvent(CudaEventMode.BlockingCompletion)
+      .toOption
+      .get
+
+    backend.recordEventStatus = failureStatus("CUDA_ERROR_INVALID_HANDLE")
+    assertEquals(
+      event.record(stream).swap.toOption.get.operation,
+      "CUDA event recording"
+    )
+    backend.recordEventStatus = successStatus
+
+    backend.queryEventStatus = failureStatus("CUDA_ERROR_LAUNCH_FAILED")
+    assertEquals(
+      event.query().swap.toOption.get.operation,
+      "CUDA event query"
+    )
+    backend.queryEventStatus = successStatus
+
+    backend.waitForEventStatus = failureStatus("CUDA_ERROR_INVALID_HANDLE")
+    assertEquals(
+      stream.waitFor(event).swap.toOption.get.operation,
+      "CUDA stream event wait"
+    )
+    backend.waitForEventStatus = successStatus
+
+    backend.synchronizeEventStatus =
+      failureStatus("CUDA_ERROR_LAUNCH_FAILED")
+    assertEquals(
+      event.synchronize().swap.toOption.get.operation,
+      "CUDA event synchronization"
+    )
+    backend.synchronizeEventStatus = successStatus
+
+    backend.destroyEventStatus =
+      failureStatus("CUDA_ERROR_INVALID_CONTEXT")
+    val exception = intercept[CudaDriverException](event.close())
+    assertEquals(exception.failure.operation, "CUDA event destruction")
+    assert(event.isOpen)
+
+    backend.destroyEventStatus = successStatus
+    context.close()
+    assert(!event.isOpen)
 
   test("pinned memory failures remain structured and retryable"):
     val backend = RecordingBackend()
@@ -670,6 +783,13 @@ class CudaResourcesSuite extends FunSuite:
     var createStreamStatus: NativeCudaDriverStatus = successStatus
     var destroyStreamStatus: NativeCudaDriverStatus = successStatus
     var synchronizeStreamStatus: NativeCudaDriverStatus = successStatus
+    var createEventStatus: NativeCudaDriverStatus = successStatus
+    var destroyEventStatus: NativeCudaDriverStatus = successStatus
+    var recordEventStatus: NativeCudaDriverStatus = successStatus
+    var queryEventStatus: NativeCudaDriverStatus = successStatus
+    var queryEventComplete = false
+    var synchronizeEventStatus: NativeCudaDriverStatus = successStatus
+    var waitForEventStatus: NativeCudaDriverStatus = successStatus
     var allocatePinnedStatus: NativeCudaDriverStatus = successStatus
     var freePinnedStatus: NativeCudaDriverStatus = successStatus
     var allocateStatus: NativeCudaDriverStatus = successStatus
@@ -678,6 +798,7 @@ class CudaResourcesSuite extends FunSuite:
     var deviceToHostStatus: NativeCudaDriverStatus = successStatus
     private var nextModuleHandle = 200L
     private var nextStreamHandle = 400L
+    private var nextEventHandle = 500L
     private var nextPinnedAddress = 2000L
     private var nextDeviceAddress = 1000L
     private val memory = HashMap.empty[Long, Array[Byte]]
@@ -768,6 +889,58 @@ class CudaResourcesSuite extends FunSuite:
     ): NativeCudaDriverStatus =
       events += s"synchronizeStream:$contextHandle:$streamHandle"
       synchronizeStreamStatus
+
+    override def createEvent(
+        contextHandle: Long,
+        flags: Int
+    ): NativeCudaResourceResult =
+      events += s"createEvent:$contextHandle:$flags"
+      val handle = nextEventHandle
+      nextEventHandle += 1
+      NativeCudaResourceResult(
+        handle = if createEventStatus.succeeded then handle else 0L,
+        status = createEventStatus
+      )
+
+    override def destroyEvent(
+        contextHandle: Long,
+        eventHandle: Long
+    ): NativeCudaDriverStatus =
+      events += s"destroyEvent:$contextHandle:$eventHandle"
+      destroyEventStatus
+
+    override def recordEvent(
+        contextHandle: Long,
+        eventHandle: Long,
+        streamHandle: Long
+    ): NativeCudaDriverStatus =
+      events += s"recordEvent:$contextHandle:$eventHandle:$streamHandle"
+      recordEventStatus
+
+    override def queryEvent(
+        contextHandle: Long,
+        eventHandle: Long
+    ): NativeCudaEventQuery =
+      events += s"queryEvent:$contextHandle:$eventHandle"
+      NativeCudaEventQuery(
+        complete = queryEventComplete,
+        status = queryEventStatus
+      )
+
+    override def synchronizeEvent(
+        contextHandle: Long,
+        eventHandle: Long
+    ): NativeCudaDriverStatus =
+      events += s"synchronizeEvent:$contextHandle:$eventHandle"
+      synchronizeEventStatus
+
+    override def waitForEvent(
+        contextHandle: Long,
+        streamHandle: Long,
+        eventHandle: Long
+    ): NativeCudaDriverStatus =
+      events += s"waitForEvent:$contextHandle:$streamHandle:$eventHandle"
+      waitForEventStatus
 
     override def allocatePinnedMemory(
         contextHandle: Long,

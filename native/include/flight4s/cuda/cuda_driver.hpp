@@ -58,6 +58,16 @@ struct CudaStreamResult {
   CUstream stream;
 };
 
+struct CudaEventResult {
+  CudaDriverStatus status;
+  CUevent event;
+};
+
+struct CudaEventQueryResult {
+  CudaDriverStatus status;
+  bool complete;
+};
+
 class CudaDriver final {
  public:
   [[nodiscard]] CudaContextResult retain_primary_context(
@@ -90,6 +100,32 @@ class CudaDriver final {
   [[nodiscard]] CudaDriverStatus synchronize_stream(
       CUcontext context,
       CUstream stream) const;
+
+  [[nodiscard]] CudaEventResult create_event(
+      CUcontext context,
+      std::uint32_t flags) const;
+
+  [[nodiscard]] CudaDriverStatus destroy_event(
+      CUcontext context,
+      CUevent event) const;
+
+  [[nodiscard]] CudaDriverStatus record_event(
+      CUcontext context,
+      CUevent event,
+      CUstream stream) const;
+
+  [[nodiscard]] CudaEventQueryResult query_event(
+      CUcontext context,
+      CUevent event) const;
+
+  [[nodiscard]] CudaDriverStatus synchronize_event(
+      CUcontext context,
+      CUevent event) const;
+
+  [[nodiscard]] CudaDriverStatus wait_for_event(
+      CUcontext context,
+      CUstream stream,
+      CUevent event) const;
 
   [[nodiscard]] CudaPinnedMemoryResult allocate_pinned_memory(
       CUcontext context,
