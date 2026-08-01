@@ -19,6 +19,9 @@ class CudaJniResultFactory final {
       const cuda::CudaDriverStatus& status,
       jlong handle = 0) const;
 
+  [[nodiscard]] jobject event_query_result(
+      const cuda::CudaEventQueryResult& result) const;
+
   [[nodiscard]] jobject pinned_memory_result(
       const cuda::CudaPinnedMemoryResult& result,
       jlong size_bytes) const;

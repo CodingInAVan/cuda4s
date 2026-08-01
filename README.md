@@ -34,7 +34,7 @@ provides:
 - native NVRTC compilation with inspectable PTX, compiler logs, compiler
   version, target, and exact generated-source provenance;
 - structured NVRTC compilation failures that retain source, options, and logs;
-- public `CudaContext`, `CudaModule`, `CudaStream`, and typed
+- public `CudaContext`, `CudaModule`, `CudaStream`, `CudaEvent`, and typed
   `CudaFunction[Args]` resources;
 - retained CUDA primary contexts with compute-capability discovery;
 - typed context-owned `CudaDeviceBuffer[T]` allocation and deterministic
@@ -42,6 +42,8 @@ provides:
 - typed context-owned `CudaPinnedBuffer[T]` allocation backed by reusable
   page-locked host memory;
 - exact synchronous transfers between same-context pinned and device buffers;
+- context-owned completion events with recording, non-blocking queries, host
+  synchronization, and same-context stream dependencies;
 - exact whole-buffer synchronous host/device copies through native-order direct
   staging storage;
 - host codecs for every current scalar type, preserving raw F16, BF16, and FP8
@@ -69,11 +71,13 @@ remain asynchronous. `CudaStream.synchronize()` provides an explicit wait;
 launch never synchronizes implicitly. Device-buffer array copies remain
 whole-buffer and synchronous through temporary pageable direct staging.
 Reusable `CudaPinnedBuffer[T]` storage provides a page-locked synchronous path
-without repeated direct-buffer allocation. Partial and asynchronous copies,
-events, and automatic in-flight resource lifetime tracking are the next runtime
-slices. Source-map artifacts retain known IR spans, while automatic Scala
-source-position capture and NVRTC diagnostic remapping remain later Scala 3
-macro/compiler iterations.
+without repeated direct-buffer allocation. `CudaEvent` exposes completion
+markers through `record`, `query`, and `synchronize`, while
+`CudaStream.waitFor` establishes GPU-side stream dependencies. Partial and
+asynchronous copies and automatic in-flight resource lifetime tracking are the
+next runtime slices. Source-map artifacts retain known IR spans, while
+automatic Scala source-position capture and NVRTC diagnostic remapping remain
+later Scala 3 macro/compiler iterations.
 
 ## Build
 

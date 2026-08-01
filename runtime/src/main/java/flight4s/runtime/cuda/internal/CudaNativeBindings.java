@@ -73,6 +73,32 @@ final class CudaNativeBindings {
       long contextHandle,
       long streamHandle);
 
+  static native NativeCudaDriverResult createEvent(
+      long contextHandle,
+      int flags);
+
+  static native NativeCudaDriverResult destroyEvent(
+      long contextHandle,
+      long eventHandle);
+
+  static native NativeCudaDriverResult recordEvent(
+      long contextHandle,
+      long eventHandle,
+      long streamHandle);
+
+  static native NativeCudaEventQueryResult queryEvent(
+      long contextHandle,
+      long eventHandle);
+
+  static native NativeCudaDriverResult synchronizeEvent(
+      long contextHandle,
+      long eventHandle);
+
+  static native NativeCudaDriverResult waitForEvent(
+      long contextHandle,
+      long streamHandle,
+      long eventHandle);
+
   static native NativeCudaPinnedMemoryResult allocatePinnedMemory(
       long contextHandle,
       long sizeBytes);

@@ -70,6 +70,10 @@ enum CudaStreamMode(private[cuda] val nativeFlags: Int):
   case Default extends CudaStreamMode(0)
   case NonBlocking extends CudaStreamMode(1)
 
+enum CudaEventMode(private[cuda] val nativeFlags: Int):
+  case Completion extends CudaEventMode(2)
+  case BlockingCompletion extends CudaEventMode(3)
+
 final class CudaContext private (
     val deviceOrdinal: Int,
     val computeCapability: ComputeCapability,
@@ -230,6 +234,34 @@ final class CudaContext private (
         )
     }
 
+  def createEvent(
+      mode: CudaEventMode = CudaEventMode.Completion
+  ): Either[CudaDriverFailure, CudaEvent] =
+    lifecycleLock.synchronized {
+      requireOpen()
+      val result = backend.createEvent(handle, mode.nativeFlags)
+      if result.status.succeeded then
+        require(
+          result.handle != 0L,
+          "successful CUDA event creation returned a null handle"
+        )
+        val event = new CudaEvent(
+          context = this,
+          mode = mode,
+          handle = result.handle,
+          backend = backend
+        )
+        resources :+= event
+        Right(event)
+      else
+        Left(
+          CudaDriverFailure.fromStatus(
+            "CUDA event creation",
+            result.status
+          )
+        )
+    }
+
   override def close(): Unit =
     lifecycleLock.synchronized {
       if !closed then
@@ -328,6 +360,29 @@ final class CudaStream private[cuda] (
         )
     }
 
+  def waitFor(event: CudaEvent): Either[CudaDriverFailure, Unit] =
+    context.synchronizedLifecycle {
+      requireOpen()
+      require(
+        event.context eq context,
+        "CUDA event and stream must belong to the same context"
+      )
+      event.requireOpen()
+      val status = backend.waitForEvent(
+        context.nativeHandle,
+        handle,
+        event.nativeHandle
+      )
+      if status.succeeded then Right(())
+      else
+        Left(
+          CudaDriverFailure.fromStatus(
+            "CUDA stream event wait",
+            status
+          )
+        )
+    }
+
   override def close(): Unit =
     context.synchronizedLifecycle {
       if !closed then
@@ -351,6 +406,104 @@ final class CudaStream private[cuda] (
     context.requireOpen()
     if closed then
       throw IllegalStateException("CUDA stream is closed")
+
+  private[cuda] def nativeHandle: Long =
+    context.synchronizedLifecycle {
+      requireOpen()
+      handle
+    }
+
+final class CudaEvent private[cuda] (
+    val context: CudaContext,
+    val mode: CudaEventMode,
+    private val handle: Long,
+    private val backend: CudaDriverBackend
+) extends AutoCloseable:
+  private var closed = false
+
+  def isOpen: Boolean =
+    context.synchronizedLifecycle(!closed && context.isOpen)
+
+  def record(stream: CudaStream): Either[CudaDriverFailure, Unit] =
+    context.synchronizedLifecycle {
+      requireOpen()
+      require(
+        stream.context eq context,
+        "CUDA event and stream must belong to the same context"
+      )
+      stream.requireOpen()
+      val status = backend.recordEvent(
+        context.nativeHandle,
+        handle,
+        stream.nativeHandle
+      )
+      if status.succeeded then Right(())
+      else
+        Left(
+          CudaDriverFailure.fromStatus(
+            "CUDA event recording",
+            status
+          )
+        )
+    }
+
+  def query(): Either[CudaDriverFailure, Boolean] =
+    context.synchronizedLifecycle {
+      requireOpen()
+      val result = backend.queryEvent(
+        context.nativeHandle,
+        handle
+      )
+      if result.status.succeeded then Right(result.complete)
+      else
+        Left(
+          CudaDriverFailure.fromStatus(
+            "CUDA event query",
+            result.status
+          )
+        )
+    }
+
+  def synchronize(): Either[CudaDriverFailure, Unit] =
+    context.synchronizedLifecycle {
+      requireOpen()
+      val status = backend.synchronizeEvent(
+        context.nativeHandle,
+        handle
+      )
+      if status.succeeded then Right(())
+      else
+        Left(
+          CudaDriverFailure.fromStatus(
+            "CUDA event synchronization",
+            status
+          )
+        )
+    }
+
+  override def close(): Unit =
+    context.synchronizedLifecycle {
+      if !closed then
+        context.requireOpen()
+        val status = backend.destroyEvent(
+          context.nativeHandle,
+          handle
+        )
+        if !status.succeeded then
+          throw CudaDriverException(
+            CudaDriverFailure.fromStatus(
+              "CUDA event destruction",
+              status
+            )
+          )
+        closed = true
+        context.unregister(this)
+    }
+
+  private[cuda] def requireOpen(): Unit =
+    context.requireOpen()
+    if closed then
+      throw IllegalStateException("CUDA event is closed")
 
   private[cuda] def nativeHandle: Long =
     context.synchronizedLifecycle {
