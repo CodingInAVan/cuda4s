@@ -571,11 +571,26 @@ final class CudaPinnedBuffer[T] private[cuda] (
       throw IllegalStateException("CUDA pinned buffer is closed")
 
   private[cuda] def transferView: ByteBuffer =
+    transferView(0L, sizeBytes)
+
+  private[cuda] def transferView(
+      offsetBytes: Long,
+      lengthBytes: Long
+  ): ByteBuffer =
     context.synchronizedLifecycle {
       requireOpen()
+      require(offsetBytes >= 0L, "pinned transfer offset must not be negative")
+      require(lengthBytes > 0L, "pinned transfer size must be positive")
+      val endBytes = Math.addExact(offsetBytes, lengthBytes)
+      require(
+        endBytes <= sizeBytes,
+        s"pinned transfer range [$offsetBytes, $endBytes) exceeds " +
+          s"buffer size $sizeBytes"
+      )
       val view = storage.duplicate().order(ByteOrder.nativeOrder())
-      view.clear()
-      view
+      view.position(Math.toIntExact(offsetBytes))
+      view.limit(Math.toIntExact(endBytes))
+      view.slice().order(ByteOrder.nativeOrder())
     }
 
   private def requireHostCodec(codec: CudaHostCodec[T]): Unit =
@@ -617,6 +632,7 @@ final class CudaDeviceBuffer[T] private[cuda] (
         backend.copyHostToDevice(
           context.nativeHandle,
           handle,
+          0L,
           source
         )
       )
@@ -626,6 +642,36 @@ final class CudaDeviceBuffer[T] private[cuda] (
       source: CudaPinnedBuffer[T]
   ): Either[CudaDriverFailure, Unit] =
     requirePinnedBuffer(source)
+    requireMatchingPinnedBufferSize(source)
+    copyFrom(
+      source = source,
+      sourceOffset = 0,
+      destinationOffset = 0,
+      elementCount = elementCount
+    )
+
+  def copyFrom(
+      source: CudaPinnedBuffer[T],
+      sourceOffset: Int,
+      destinationOffset: Int,
+      elementCount: Int
+  ): Either[CudaDriverFailure, Unit] =
+    requirePinnedBuffer(source)
+    requireElementRange(
+      sourceOffset,
+      elementCount,
+      source.elementCount,
+      "pinned source"
+    )
+    requireElementRange(
+      destinationOffset,
+      elementCount,
+      this.elementCount,
+      "device destination"
+    )
+    val sourceOffsetBytes = byteExtent(sourceOffset)
+    val destinationOffsetBytes = byteExtent(destinationOffset)
+    val copySizeBytes = byteExtent(elementCount)
     context.synchronizedLifecycle {
       requireOpen()
       source.requireOpen()
@@ -634,7 +680,8 @@ final class CudaDeviceBuffer[T] private[cuda] (
         backend.copyHostToDevice(
           context.nativeHandle,
           handle,
-          source.transferView
+          destinationOffsetBytes,
+          source.transferView(sourceOffsetBytes, copySizeBytes)
         )
       )
     }
@@ -652,6 +699,7 @@ final class CudaDeviceBuffer[T] private[cuda] (
       val status = backend.copyDeviceToHost(
         context.nativeHandle,
         handle,
+        0L,
         destination
       )
       if status.succeeded then
@@ -669,6 +717,36 @@ final class CudaDeviceBuffer[T] private[cuda] (
       destination: CudaPinnedBuffer[T]
   ): Either[CudaDriverFailure, Unit] =
     requirePinnedBuffer(destination)
+    requireMatchingPinnedBufferSize(destination)
+    copyTo(
+      destination = destination,
+      sourceOffset = 0,
+      destinationOffset = 0,
+      elementCount = elementCount
+    )
+
+  def copyTo(
+      destination: CudaPinnedBuffer[T],
+      sourceOffset: Int,
+      destinationOffset: Int,
+      elementCount: Int
+  ): Either[CudaDriverFailure, Unit] =
+    requirePinnedBuffer(destination)
+    requireElementRange(
+      sourceOffset,
+      elementCount,
+      this.elementCount,
+      "device source"
+    )
+    requireElementRange(
+      destinationOffset,
+      elementCount,
+      destination.elementCount,
+      "pinned destination"
+    )
+    val sourceOffsetBytes = byteExtent(sourceOffset)
+    val destinationOffsetBytes = byteExtent(destinationOffset)
+    val copySizeBytes = byteExtent(elementCount)
     context.synchronizedLifecycle {
       requireOpen()
       destination.requireOpen()
@@ -677,7 +755,11 @@ final class CudaDeviceBuffer[T] private[cuda] (
         backend.copyDeviceToHost(
           context.nativeHandle,
           handle,
-          destination.transferView
+          sourceOffsetBytes,
+          destination.transferView(
+            destinationOffsetBytes,
+            copySizeBytes
+          )
         )
       )
     }
@@ -734,11 +816,32 @@ final class CudaDeviceBuffer[T] private[cuda] (
       s"pinned buffer type ${buffer.valueType.cudaName} does not match " +
         s"device buffer type ${valueType.cudaName}"
     )
+
+  private def requireMatchingPinnedBufferSize(
+      buffer: CudaPinnedBuffer[T]
+  ): Unit =
     require(
       buffer.elementCount == elementCount &&
         buffer.sizeBytes == sizeBytes,
       "CUDA pinned and device buffer sizes must match"
     )
+
+  private def requireElementRange(
+      offset: Int,
+      count: Int,
+      capacity: Int,
+      description: String
+  ): Unit =
+    require(offset >= 0, s"$description offset must not be negative: $offset")
+    require(count > 0, s"$description element count must be positive: $count")
+    val end = Math.addExact(offset.toLong, count.toLong)
+    require(
+      end <= capacity.toLong,
+      s"$description range [$offset, $end) exceeds element count $capacity"
+    )
+
+  private def byteExtent(elements: Int): Long =
+    Math.multiplyExact(elements.toLong, valueType.sizeBytes.toLong)
 
   private def copyResult(
       operation: String,

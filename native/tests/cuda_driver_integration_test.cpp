@@ -130,7 +130,7 @@ int main(int argument_count, char** arguments) {
     }
     auto* pinned_values =
         static_cast<std::int32_t*>(pinned_memory);
-    std::copy(host_source.begin(), host_source.end(), pinned_values);
+    std::fill(pinned_values, pinned_values + host_source.size(), 0);
     const auto memory_result = driver.allocate_device_memory(
         context,
         sizeof(host_source));
@@ -147,23 +147,36 @@ int main(int argument_count, char** arguments) {
         driver.copy_host_to_device(
             context,
             memory,
+            0,
             pinned_memory,
             sizeof(host_source)),
-        "copy host to device");
-    std::fill(pinned_values, pinned_values + host_source.size(), 0);
+        "initialize device memory");
+    std::copy(host_source.begin(), host_source.end(), pinned_values);
+    require_success(
+        driver.copy_host_to_device(
+            context,
+            memory,
+            sizeof(std::int32_t),
+            pinned_values + 1,
+            sizeof(std::int32_t) * 2),
+        "copy partial host range to device");
+    std::fill(pinned_values, pinned_values + host_source.size(), -1);
     require_success(
         driver.copy_device_to_host(
             context,
-            pinned_memory,
+            pinned_values + 1,
             memory,
-            sizeof(host_source)),
-        "copy device to host");
+            sizeof(std::int32_t),
+            sizeof(std::int32_t) * 2),
+        "copy partial device range to host");
+    const std::array<std::int32_t, 4> expected_partial{
+        -1, 22, 33, -1};
     if (!std::equal(
-            host_source.begin(),
-            host_source.end(),
+            expected_partial.begin(),
+            expected_partial.end(),
             pinned_values)) {
       throw std::runtime_error(
-          "device-memory copy round trip did not preserve bytes");
+          "partial copy modified values outside the selected range");
     }
 
     const auto module_result =

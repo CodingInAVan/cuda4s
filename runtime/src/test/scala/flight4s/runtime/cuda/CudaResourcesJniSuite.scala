@@ -210,6 +210,36 @@ class CudaResourcesJniSuite extends FunSuite:
     finally
       if context.isOpen then context.close()
 
+  test("partial pinned transfers preserve untouched elements on the GPU"):
+    assume(
+      nativeLibraryConfigured,
+      "set flight4s.cuda.native.path to run JNI tests"
+    )
+
+    val context = openContext()
+    try
+      val source = context.allocatePinned[Int](6).toOption.get
+      val destination = context.allocatePinned[Int](7).toOption.get
+      val device = context.allocate[Int](8).toOption.get
+
+      source.copyFrom(Array(10, 20, 30, 40, 50, 60))
+      destination.copyFrom(Array.fill(7)(-1))
+      assertEquals(device.copyFrom(Array.fill(8)(0)), Right(()))
+      assertEquals(
+        device.copyFrom(source, 1, 3, 3),
+        Right(())
+      )
+      assertEquals(
+        device.copyTo(destination, 2, 1, 4),
+        Right(())
+      )
+      assertEquals(
+        destination.toArray.toSeq,
+        Seq(-1, 0, 20, 30, 40, -1, -1)
+      )
+    finally
+      if context.isOpen then context.close()
+
   private def openContext(): CudaContext =
     CudaContext.open(0) match
       case Right(context) => context

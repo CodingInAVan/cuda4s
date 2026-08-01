@@ -51,6 +51,24 @@ void require_device_address(
   }
 }
 
+CUdeviceptr checked_device_range(
+    CUdeviceptr address,
+    std::uint64_t offset_bytes,
+    std::uint64_t size_bytes,
+    const char* description) {
+  const auto maximum = std::numeric_limits<CUdeviceptr>::max();
+  if (offset_bytes > maximum - address) {
+    throw std::overflow_error(
+        std::string(description) + " exceeds the device address range");
+  }
+  const auto start = address + static_cast<CUdeviceptr>(offset_bytes);
+  if (size_bytes - 1 > maximum - start) {
+    throw std::overflow_error(
+        std::string(description) + " extent exceeds the device address range");
+  }
+  return start;
+}
+
 void require_stream_flags(std::uint32_t flags) {
   if (flags != CU_STREAM_DEFAULT &&
       flags != CU_STREAM_NON_BLOCKING) {
@@ -502,6 +520,7 @@ CudaDriverStatus CudaDriver::free_device_memory(
 CudaDriverStatus CudaDriver::copy_host_to_device(
     CUcontext context,
     CUdeviceptr destination,
+    std::uint64_t destination_offset_bytes,
     const void* source,
     std::uint64_t size_bytes) const {
   require_handle(context, "CUDA context handle");
@@ -509,13 +528,18 @@ CudaDriverStatus CudaDriver::copy_host_to_device(
   require_handle(source, "host source address");
   const auto native_size =
       checked_size(size_bytes, "CUDA copy size");
+  const auto destination_address = checked_device_range(
+      destination,
+      destination_offset_bytes,
+      size_bytes,
+      "CUDA destination offset");
 
   CurrentContextScope current(context);
   if (current.push_result() != CUDA_SUCCESS) {
     return make_driver_status(current.push_result());
   }
   return finish_context_operation(
-      cuMemcpyHtoD(destination, source, native_size),
+      cuMemcpyHtoD(destination_address, source, native_size),
       current);
 }
 
@@ -523,19 +547,25 @@ CudaDriverStatus CudaDriver::copy_device_to_host(
     CUcontext context,
     void* destination,
     CUdeviceptr source,
+    std::uint64_t source_offset_bytes,
     std::uint64_t size_bytes) const {
   require_handle(context, "CUDA context handle");
   require_handle(destination, "host destination address");
   require_device_address(source, "CUDA source address");
   const auto native_size =
       checked_size(size_bytes, "CUDA copy size");
+  const auto source_address = checked_device_range(
+      source,
+      source_offset_bytes,
+      size_bytes,
+      "CUDA source offset");
 
   CurrentContextScope current(context);
   if (current.push_result() != CUDA_SUCCESS) {
     return make_driver_status(current.push_result());
   }
   return finish_context_operation(
-      cuMemcpyDtoH(destination, source, native_size),
+      cuMemcpyDtoH(destination, source_address, native_size),
       current);
 }
 

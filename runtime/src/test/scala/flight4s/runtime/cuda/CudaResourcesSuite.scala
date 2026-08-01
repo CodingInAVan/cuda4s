@@ -191,6 +191,69 @@ class CudaResourcesSuite extends FunSuite:
 
     context.close()
 
+  test("partial pinned transfers preserve elements outside each range"):
+    val backend = RecordingBackend()
+    val context = openedContext(backend)
+    val source = context.allocatePinned[Int](6).toOption.get
+    val destination = context.allocatePinned[Int](7).toOption.get
+    val device = context.allocate[Int](8).toOption.get
+
+    source.copyFrom(Array(10, 20, 30, 40, 50, 60))
+    destination.copyFrom(Array.fill(7)(-1))
+    assertEquals(device.copyFrom(Array.fill(8)(0)), Right(()))
+    assertEquals(
+      device.copyFrom(
+        source = source,
+        sourceOffset = 1,
+        destinationOffset = 3,
+        elementCount = 3
+      ),
+      Right(())
+    )
+    assertEquals(
+      device.copyTo(
+        destination = destination,
+        sourceOffset = 2,
+        destinationOffset = 1,
+        elementCount = 4
+      ),
+      Right(())
+    )
+    assertEquals(
+      destination.toArray.toSeq,
+      Seq(-1, 0, 20, 30, 40, -1, -1)
+    )
+
+    val submissionCount = backend.events.count { event =>
+      event.startsWith("copyHtoD:") || event.startsWith("copyDtoH:")
+    }
+    intercept[IllegalArgumentException](
+      device.copyFrom(source, -1, 0, 1)
+    )
+    intercept[IllegalArgumentException](
+      device.copyFrom(source, 0, -1, 1)
+    )
+    intercept[IllegalArgumentException](
+      device.copyFrom(source, 0, 0, 0)
+    )
+    intercept[IllegalArgumentException](
+      device.copyFrom(source, 4, 0, 3)
+    )
+    intercept[IllegalArgumentException](
+      device.copyTo(destination, 6, 0, 3)
+    )
+    intercept[IllegalArgumentException](
+      device.copyTo(destination, 0, 5, 3)
+    )
+    assertEquals(
+      backend.events.count { event =>
+        event.startsWith("copyHtoD:") || event.startsWith("copyDtoH:")
+      },
+      submissionCount
+    )
+
+    context.close()
+
   test("device buffers reject pinned buffers from another context"):
     val backend = RecordingBackend()
     val deviceContext = openedContext(backend)
@@ -995,20 +1058,37 @@ class CudaResourcesSuite extends FunSuite:
     override def copyHostToDevice(
         contextHandle: Long,
         deviceAddress: Long,
+        deviceOffsetBytes: Long,
         source: ByteBuffer
     ): NativeCudaDriverStatus =
-      events += s"copyHtoD:$contextHandle:$deviceAddress"
+      events +=
+        s"copyHtoD:$contextHandle:$deviceAddress:" +
+          s"$deviceOffsetBytes:${source.remaining()}"
       if hostToDeviceStatus.succeeded then
-        val bytes = memory(deviceAddress)
-        source.duplicate().get(bytes)
+        val input = new Array[Byte](source.remaining())
+        source.duplicate().get(input)
+        Array.copy(
+          input,
+          0,
+          memory(deviceAddress),
+          Math.toIntExact(deviceOffsetBytes),
+          input.length
+        )
       hostToDeviceStatus
 
     override def copyDeviceToHost(
         contextHandle: Long,
         deviceAddress: Long,
+        deviceOffsetBytes: Long,
         destination: ByteBuffer
     ): NativeCudaDriverStatus =
-      events += s"copyDtoH:$contextHandle:$deviceAddress"
+      events +=
+        s"copyDtoH:$contextHandle:$deviceAddress:" +
+          s"$deviceOffsetBytes:${destination.remaining()}"
       if deviceToHostStatus.succeeded then
-        destination.duplicate().put(memory(deviceAddress))
+        destination.duplicate().put(
+          memory(deviceAddress),
+          Math.toIntExact(deviceOffsetBytes),
+          destination.remaining()
+        )
       deviceToHostStatus
