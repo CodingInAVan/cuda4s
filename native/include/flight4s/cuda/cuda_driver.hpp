@@ -146,6 +146,7 @@ class CudaDriver final {
   [[nodiscard]] CudaDriverStatus copy_host_to_device(
       CUcontext context,
       CUdeviceptr destination,
+      std::uint64_t destination_offset_bytes,
       const void* source,
       std::uint64_t size_bytes) const;
 
@@ -153,6 +154,7 @@ class CudaDriver final {
       CUcontext context,
       void* destination,
       CUdeviceptr source,
+      std::uint64_t source_offset_bytes,
       std::uint64_t size_bytes) const;
 };
 

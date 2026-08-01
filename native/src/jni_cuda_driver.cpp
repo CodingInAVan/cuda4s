@@ -264,7 +264,12 @@ class CudaDriverJniAdapter final {
   [[nodiscard]] jobject copy_host_to_device(
       jlong context_handle,
       jlong device_address,
+      jlong device_offset_bytes,
       jobject source) const {
+    if (device_offset_bytes < 0) {
+      throw std::invalid_argument(
+          "CUDA destination offset must not be negative");
+    }
     const auto view = flight4s::jni::DirectBufferView::require_exact(
         environment_,
         source,
@@ -275,6 +280,7 @@ class CudaDriverJniAdapter final {
     const auto status = driver_.copy_host_to_device(
         from_java_handle<CUcontext>(context_handle),
         from_java_device_address(device_address),
+        static_cast<std::uint64_t>(device_offset_bytes),
         view.data(),
         static_cast<std::uint64_t>(view.size_bytes()));
     return results_.driver_result(status);
@@ -283,7 +289,12 @@ class CudaDriverJniAdapter final {
   [[nodiscard]] jobject copy_device_to_host(
       jlong context_handle,
       jlong device_address,
+      jlong device_offset_bytes,
       jobject destination) const {
+    if (device_offset_bytes < 0) {
+      throw std::invalid_argument(
+          "CUDA source offset must not be negative");
+    }
     const auto view = flight4s::jni::DirectBufferView::require_exact(
         environment_,
         destination,
@@ -295,6 +306,7 @@ class CudaDriverJniAdapter final {
         from_java_handle<CUcontext>(context_handle),
         view.data(),
         from_java_device_address(device_address),
+        static_cast<std::uint64_t>(device_offset_bytes),
         static_cast<std::uint64_t>(view.size_bytes()));
     return results_.driver_result(status);
   }
@@ -711,6 +723,7 @@ Java_flight4s_runtime_cuda_internal_CudaNativeBindings_copyHostToDevice(
     jclass,
     jlong context_handle,
     jlong device_address,
+    jlong device_offset_bytes,
     jobject source) {
   const flight4s::jni::JniEnvironment jni(environment);
   try {
@@ -718,6 +731,7 @@ Java_flight4s_runtime_cuda_internal_CudaNativeBindings_copyHostToDevice(
         .copy_host_to_device(
             context_handle,
             device_address,
+            device_offset_bytes,
             source);
   } catch (const std::invalid_argument& error) {
     jni.throw_illegal_argument(error.what());
@@ -735,6 +749,7 @@ Java_flight4s_runtime_cuda_internal_CudaNativeBindings_copyDeviceToHost(
     jclass,
     jlong context_handle,
     jlong device_address,
+    jlong device_offset_bytes,
     jobject destination) {
   const flight4s::jni::JniEnvironment jni(environment);
   try {
@@ -742,6 +757,7 @@ Java_flight4s_runtime_cuda_internal_CudaNativeBindings_copyDeviceToHost(
         .copy_device_to_host(
             context_handle,
             device_address,
+            device_offset_bytes,
             destination);
   } catch (const std::invalid_argument& error) {
     jni.throw_illegal_argument(error.what());

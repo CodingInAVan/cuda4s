@@ -6,8 +6,8 @@ operations:
 - compile one CUDA C++ source artifact to PTX with NVRTC;
 - retain CUDA primary contexts, load PTX modules, resolve functions, and unload
   resources through the CUDA Driver API;
-- allocate and free device memory and perform synchronous whole-buffer
-  host/device copies;
+- allocate and free device memory and perform synchronous whole-buffer and
+  partial-range host/device copies;
 - allocate page-locked host memory, expose an exact JNI direct-buffer view, and
   release the native allocation;
 - create, record, query, synchronize, wait on, and destroy CUDA events;

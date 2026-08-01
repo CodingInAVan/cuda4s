@@ -41,7 +41,8 @@ provides:
   `AutoCloseable` cleanup;
 - typed context-owned `CudaPinnedBuffer[T]` allocation backed by reusable
   page-locked host memory;
-- exact synchronous transfers between same-context pinned and device buffers;
+- exact whole-buffer and partial-range synchronous transfers between
+  same-context pinned and device buffers;
 - context-owned completion events with recording, non-blocking queries, host
   synchronization, and same-context stream dependencies;
 - exact whole-buffer synchronous host/device copies through native-order direct
@@ -73,8 +74,9 @@ whole-buffer and synchronous through temporary pageable direct staging.
 Reusable `CudaPinnedBuffer[T]` storage provides a page-locked synchronous path
 without repeated direct-buffer allocation. `CudaEvent` exposes completion
 markers through `record`, `query`, and `synchronize`, while
-`CudaStream.waitFor` establishes GPU-side stream dependencies. Partial and
-asynchronous copies and automatic in-flight resource lifetime tracking are the
+`CudaStream.waitFor` establishes GPU-side stream dependencies. Pinned/device
+copies accept independently validated source and destination element ranges.
+Asynchronous copies and automatic in-flight resource lifetime tracking are the
 next runtime slices. Source-map artifacts retain known IR spans, while
 automatic Scala source-position capture and NVRTC diagnostic remapping remain
 later Scala 3 macro/compiler iterations.
