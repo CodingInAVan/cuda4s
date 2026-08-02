@@ -99,10 +99,12 @@ stores, accumulation, structured control flow, reductions, and barriers.
 Fine-grained expression/operator spans remain a later increment. Deterministic
 NVRTC compilation identity now uses a versioned canonical encoding and SHA-256
 over generated CUDA, resolved options, target, compiler/codegen versions,
-program name, and kernel ABI/launch metadata. Cache storage and lookup are not
-yet implemented. `NvrtcCompiler.version()` queries the loaded compiler version
-without creating or compiling a CUDA program, allowing that version to
-participate in a cache key before lookup.
+program name, and kernel ABI/launch metadata. `NvrtcCompilationCache` provides
+a caller-owned bounded in-memory LRU cache of successful PTX compilations;
+cache hits rebind the PTX metadata to the current generated Scala artifact.
+`NvrtcCompiler.version()` queries the loaded compiler version without creating
+or compiling a CUDA program, allowing that version to participate in a cache
+key before lookup.
 
 ## Build
 
