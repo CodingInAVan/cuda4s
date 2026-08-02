@@ -1,6 +1,7 @@
 package flight4s.runtime.cuda
 
 import java.nio.{ByteBuffer, ByteOrder}
+import scala.util.control.NonFatal
 
 import flight4s.core.abi.{DeviceAddress, NativeLaunchRequest}
 import flight4s.core.codegen.GeneratedKernel
@@ -73,6 +74,9 @@ enum CudaStreamMode(private[cuda] val nativeFlags: Int):
 enum CudaEventMode(private[cuda] val nativeFlags: Int):
   case Completion extends CudaEventMode(2)
   case BlockingCompletion extends CudaEventMode(3)
+
+private[cuda] trait CudaInFlightResource:
+  private[cuda] def acquireInFlight(): InFlightLease[CudaDriverFailure]
 
 final class CudaContext private (
     val deviceOrdinal: Int,
@@ -339,6 +343,8 @@ final class CudaStream private[cuda] (
     private val backend: CudaDriverBackend
 ) extends AutoCloseable:
   private var closed = false
+  private var pendingBatches =
+    Vector.empty[InFlightBatch[CudaDriverFailure]]
 
   def isOpen: Boolean =
     context.synchronizedLifecycle(!closed && context.isOpen)
@@ -350,7 +356,7 @@ final class CudaStream private[cuda] (
         context.nativeHandle,
         handle
       )
-      if status.succeeded then Right(())
+      if status.succeeded then completePendingBatches()
       else
         Left(
           CudaDriverFailure.fromStatus(
@@ -387,6 +393,21 @@ final class CudaStream private[cuda] (
     context.synchronizedLifecycle {
       if !closed then
         context.requireOpen()
+        if pendingBatches.exists(batch => !batch.isComplete) then
+          val synchronization = backend.synchronizeStream(
+            context.nativeHandle,
+            handle
+          )
+          if !synchronization.succeeded then
+            throw CudaDriverException(
+              CudaDriverFailure.fromStatus(
+                "CUDA stream synchronization during close",
+                synchronization
+              )
+            )
+          completePendingBatches() match
+            case Left(failure) => throw CudaDriverException(failure)
+            case Right(()) => ()
         val status = backend.destroyStream(
           context.nativeHandle,
           handle
@@ -413,6 +434,80 @@ final class CudaStream private[cuda] (
       handle
     }
 
+  private[cuda] def submitTracked(
+      resources: Vector[CudaInFlightResource]
+  )(
+      submit: Long => NativeCudaDriverStatus
+  ): NativeCudaDriverStatus =
+    context.synchronizedLifecycle {
+      requireOpen()
+      pruneCompletedBatches()
+      val uniqueResources = resources.foldLeft(
+        Vector.empty[CudaInFlightResource]
+      ) { (unique, resource) =>
+        if unique.exists(_ eq resource) then unique
+        else unique :+ resource
+      }
+      val batch = InFlightBatch(
+        uniqueResources.map(_.acquireInFlight())
+      )
+      try
+        val status = submit(handle)
+        if status.succeeded then pendingBatches :+= batch
+        else releaseFailedSubmission(batch)
+        status
+      catch
+        case NonFatal(error) =>
+          releaseFailedSubmission(batch)
+          throw error
+    }
+
+  private[cuda] def completionSnapshot()
+      : Vector[InFlightBatch[CudaDriverFailure]] =
+    context.synchronizedLifecycle {
+      requireOpen()
+      pruneCompletedBatches()
+      pendingBatches
+    }
+
+  private[cuda] def completeBatches(
+      batches: Vector[InFlightBatch[CudaDriverFailure]]
+  ): Either[CudaDriverFailure, Unit] =
+    context.synchronizedLifecycle {
+      val result = completeAll(batches)
+      pruneCompletedBatches()
+      result
+    }
+
+  private def completePendingBatches()
+      : Either[CudaDriverFailure, Unit] =
+    val batches = pendingBatches
+    val result = completeAll(batches)
+    pruneCompletedBatches()
+    result
+
+  private def completeAll(
+      batches: Vector[InFlightBatch[CudaDriverFailure]]
+  ): Either[CudaDriverFailure, Unit] =
+    var firstFailure = Option.empty[CudaDriverFailure]
+    batches.foreach { batch =>
+      batch.complete() match
+        case Left(failure) if firstFailure.isEmpty =>
+          firstFailure = Some(failure)
+        case _ => ()
+    }
+    firstFailure.toLeft(())
+
+  private def pruneCompletedBatches(): Unit =
+    pendingBatches = pendingBatches.filterNot(_.isComplete)
+
+  private def releaseFailedSubmission(
+      batch: InFlightBatch[CudaDriverFailure]
+  ): Unit =
+    batch.complete() match
+      case Left(failure) => throw CudaDriverException(failure)
+      case Right(()) => ()
+
 final class CudaEvent private[cuda] (
     val context: CudaContext,
     val mode: CudaEventMode,
@@ -420,6 +515,9 @@ final class CudaEvent private[cuda] (
     private val backend: CudaDriverBackend
 ) extends AutoCloseable:
   private var closed = false
+  private var recordedCompletion = Option.empty[
+    (CudaStream, Vector[InFlightBatch[CudaDriverFailure]])
+  ]
 
   def isOpen: Boolean =
     context.synchronizedLifecycle(!closed && context.isOpen)
@@ -437,7 +535,11 @@ final class CudaEvent private[cuda] (
         handle,
         stream.nativeHandle
       )
-      if status.succeeded then Right(())
+      if status.succeeded then
+        recordedCompletion = Some(
+          stream -> stream.completionSnapshot()
+        )
+        Right(())
       else
         Left(
           CudaDriverFailure.fromStatus(
@@ -454,7 +556,9 @@ final class CudaEvent private[cuda] (
         context.nativeHandle,
         handle
       )
-      if result.status.succeeded then Right(result.complete)
+      if result.status.succeeded && result.complete then
+        completeRecorded().map(_ => true)
+      else if result.status.succeeded then Right(false)
       else
         Left(
           CudaDriverFailure.fromStatus(
@@ -471,7 +575,7 @@ final class CudaEvent private[cuda] (
         context.nativeHandle,
         handle
       )
-      if status.succeeded then Right(())
+      if status.succeeded then completeRecorded()
       else
         Left(
           CudaDriverFailure.fromStatus(
@@ -496,6 +600,7 @@ final class CudaEvent private[cuda] (
               status
             )
           )
+        recordedCompletion = None
         closed = true
         context.unregister(this)
     }
@@ -511,6 +616,13 @@ final class CudaEvent private[cuda] (
       handle
     }
 
+  private def completeRecorded(): Either[CudaDriverFailure, Unit] =
+    val completion = recordedCompletion
+    recordedCompletion = None
+    completion match
+      case Some((stream, batches)) => stream.completeBatches(batches)
+      case None => Right(())
+
 final class CudaPinnedBuffer[T] private[cuda] (
     val context: CudaContext,
     val valueType: CudaType[T],
@@ -519,11 +631,27 @@ final class CudaPinnedBuffer[T] private[cuda] (
     private val handle: Long,
     private val storage: ByteBuffer,
     private val backend: CudaDriverBackend
-) extends AutoCloseable:
-  private var closed = false
+) extends AutoCloseable,
+      CudaInFlightResource:
+  private val lifetime = InFlightResourceState[CudaDriverFailure] { () =>
+    val status = backend.freePinnedMemory(
+      context.nativeHandle,
+      handle
+    )
+    if status.succeeded then
+      context.unregister(this)
+      Right(())
+    else
+      Left(
+        CudaDriverFailure.fromStatus(
+          "CUDA pinned memory free",
+          status
+        )
+      )
+  }
 
   def isOpen: Boolean =
-    context.synchronizedLifecycle(!closed && context.isOpen)
+    context.synchronizedLifecycle(lifetime.isOpen && context.isOpen)
 
   def copyFrom(
       values: Array[T]
@@ -536,6 +664,7 @@ final class CudaPinnedBuffer[T] private[cuda] (
     )
     context.synchronizedLifecycle {
       requireOpen()
+      requireIdle()
       codec.encodeInto(values, storage)
     }
 
@@ -543,32 +672,31 @@ final class CudaPinnedBuffer[T] private[cuda] (
     requireHostCodec(codec)
     context.synchronizedLifecycle {
       requireOpen()
+      requireIdle()
       codec.decode(storage, elementCount)
     }
 
   override def close(): Unit =
     context.synchronizedLifecycle {
-      if !closed then
+      if !lifetime.isReleased then
         context.requireOpen()
-        val status = backend.freePinnedMemory(
-          context.nativeHandle,
-          handle
-        )
-        if !status.succeeded then
-          throw CudaDriverException(
-            CudaDriverFailure.fromStatus(
-              "CUDA pinned memory free",
-              status
-            )
-          )
-        closed = true
-        context.unregister(this)
+        lifetime.requestClose() match
+          case Left(failure) => throw CudaDriverException(failure)
+          case Right(()) => ()
     }
 
   private[cuda] def requireOpen(): Unit =
     context.requireOpen()
-    if closed then
+    if !lifetime.isOpen then
       throw IllegalStateException("CUDA pinned buffer is closed")
+
+  private[cuda] def requireIdle(): Unit =
+    lifetime.requireIdle("CUDA pinned buffer")
+
+  override private[cuda] def acquireInFlight()
+      : InFlightLease[CudaDriverFailure] =
+    requireOpen()
+    lifetime.acquire()
 
   private[cuda] def transferView: ByteBuffer =
     transferView(0L, sizeBytes)
@@ -608,11 +736,27 @@ final class CudaDeviceBuffer[T] private[cuda] (
     private val handle: Long,
     private val backend: CudaDriverBackend
 ) extends DeviceBuffer[T],
-      AutoCloseable:
-  private var closed = false
+      AutoCloseable,
+      CudaInFlightResource:
+  private val lifetime = InFlightResourceState[CudaDriverFailure] { () =>
+    val status = backend.freeDeviceMemory(
+      context.nativeHandle,
+      handle
+    )
+    if status.succeeded then
+      context.unregister(this)
+      Right(())
+    else
+      Left(
+        CudaDriverFailure.fromStatus(
+          "CUDA device memory free",
+          status
+        )
+      )
+  }
 
   def isOpen: Boolean =
-    context.synchronizedLifecycle(!closed && context.isOpen)
+    context.synchronizedLifecycle(lifetime.isOpen && context.isOpen)
 
   def copyFrom(
       values: Array[T]
@@ -627,6 +771,7 @@ final class CudaDeviceBuffer[T] private[cuda] (
     val source = codec.encode(values)
     context.synchronizedLifecycle {
       requireOpen()
+      requireIdle()
       copyResult(
         "CUDA host-to-device copy",
         backend.copyHostToDevice(
@@ -675,6 +820,8 @@ final class CudaDeviceBuffer[T] private[cuda] (
     context.synchronizedLifecycle {
       requireOpen()
       source.requireOpen()
+      requireIdle()
+      source.requireIdle()
       copyResult(
         "CUDA pinned host-to-device copy",
         backend.copyHostToDevice(
@@ -728,15 +875,19 @@ final class CudaDeviceBuffer[T] private[cuda] (
       requireOpen()
       source.requireOpen()
       stream.requireOpen()
+      val sourceView =
+        source.transferView(sourceOffsetBytes, copySizeBytes)
       copyResult(
         "CUDA asynchronous pinned host-to-device copy",
-        backend.copyHostToDeviceAsync(
-          context.nativeHandle,
-          handle,
-          destinationOffsetBytes,
-          source.transferView(sourceOffsetBytes, copySizeBytes),
-          stream.nativeHandle
-        )
+        stream.submitTracked(Vector(source, this)) { streamHandle =>
+          backend.copyHostToDeviceAsync(
+            context.nativeHandle,
+            handle,
+            destinationOffsetBytes,
+            sourceView,
+            streamHandle
+          )
+        }
       )
     }
 
@@ -750,6 +901,7 @@ final class CudaDeviceBuffer[T] private[cuda] (
       .order(ByteOrder.nativeOrder())
     context.synchronizedLifecycle {
       requireOpen()
+      requireIdle()
       val status = backend.copyDeviceToHost(
         context.nativeHandle,
         handle,
@@ -804,6 +956,8 @@ final class CudaDeviceBuffer[T] private[cuda] (
     context.synchronizedLifecycle {
       requireOpen()
       destination.requireOpen()
+      requireIdle()
+      destination.requireIdle()
       copyResult(
         "CUDA device-to-pinned-host copy",
         backend.copyDeviceToHost(
@@ -860,36 +1014,31 @@ final class CudaDeviceBuffer[T] private[cuda] (
       requireOpen()
       destination.requireOpen()
       stream.requireOpen()
+      val destinationView = destination.transferView(
+        destinationOffsetBytes,
+        copySizeBytes
+      )
       copyResult(
         "CUDA asynchronous device-to-pinned-host copy",
-        backend.copyDeviceToHostAsync(
-          context.nativeHandle,
-          handle,
-          sourceOffsetBytes,
-          destination.transferView(
-            destinationOffsetBytes,
-            copySizeBytes
-          ),
-          stream.nativeHandle
-        )
+        stream.submitTracked(Vector(this, destination)) { streamHandle =>
+          backend.copyDeviceToHostAsync(
+            context.nativeHandle,
+            handle,
+            sourceOffsetBytes,
+            destinationView,
+            streamHandle
+          )
+        }
       )
     }
 
   override def close(): Unit =
     context.synchronizedLifecycle {
-      if !closed then
+      if !lifetime.isReleased then
         context.requireOpen()
-        val status =
-          backend.freeDeviceMemory(context.nativeHandle, handle)
-        if !status.succeeded then
-          throw CudaDriverException(
-            CudaDriverFailure.fromStatus(
-              "CUDA device memory free",
-              status
-            )
-          )
-        closed = true
-        context.unregister(this)
+        lifetime.requestClose() match
+          case Left(failure) => throw CudaDriverException(failure)
+          case Right(()) => ()
     }
 
   override private[flight4s] def deviceAddress: DeviceAddress =
@@ -900,8 +1049,16 @@ final class CudaDeviceBuffer[T] private[cuda] (
 
   private def requireOpen(): Unit =
     context.requireOpen()
-    if closed then
+    if !lifetime.isOpen then
       throw IllegalStateException("CUDA device buffer is closed")
+
+  private def requireIdle(): Unit =
+    lifetime.requireIdle("CUDA device buffer")
+
+  override private[cuda] def acquireInFlight()
+      : InFlightLease[CudaDriverFailure] =
+    requireOpen()
+    lifetime.acquire()
 
   private def requireHostCodec(codec: CudaHostCodec[T]): Unit =
     require(
@@ -972,11 +1129,27 @@ final class CudaModule private[cuda] (
     val artifact: NvrtcArtifact,
     private val handle: Long,
     private val backend: CudaDriverBackend
-) extends AutoCloseable:
-  private var closed = false
+) extends AutoCloseable,
+      CudaInFlightResource:
+  private val lifetime = InFlightResourceState[CudaDriverFailure] { () =>
+    val status = backend.unloadModule(
+      context.nativeHandle,
+      handle
+    )
+    if status.succeeded then
+      context.unregister(this)
+      Right(())
+    else
+      Left(
+        CudaDriverFailure.fromStatus(
+          "CUDA module unload",
+          status
+        )
+      )
+  }
 
   def isOpen: Boolean =
-    context.synchronizedLifecycle(!closed && context.isOpen)
+    context.synchronizedLifecycle(lifetime.isOpen && context.isOpen)
 
   def function[Args <: Tuple](
       generated: GeneratedKernel[Args]
@@ -1006,25 +1179,22 @@ final class CudaModule private[cuda] (
 
   override def close(): Unit =
     context.synchronizedLifecycle {
-      if !closed then
+      if !lifetime.isReleased then
         context.requireOpen()
-        val status =
-          backend.unloadModule(context.nativeHandle, handle)
-        if !status.succeeded then
-          throw CudaDriverException(
-            CudaDriverFailure.fromStatus(
-              "CUDA module unload",
-              status
-            )
-          )
-        closed = true
-        context.unregister(this)
+        lifetime.requestClose() match
+          case Left(failure) => throw CudaDriverException(failure)
+          case Right(()) => ()
     }
 
   private[cuda] def requireOpen(): Unit =
     context.requireOpen()
-    if closed then
+    if !lifetime.isOpen then
       throw IllegalStateException("CUDA module is closed")
+
+  override private[cuda] def acquireInFlight()
+      : InFlightLease[CudaDriverFailure] =
+    requireOpen()
+    lifetime.acquire()
 
   private[cuda] def submit(
       functionHandle: Long,
@@ -1079,7 +1249,19 @@ final class CudaFunction[Args <: Tuple] private[cuda] (
         validateDynamicSharedMemory(config).flatMap { _ =>
           validateStream(stream).flatMap { streamHandle =>
             val request = invocation.nativeLaunchRequest(config)
-            val status = module.submit(handle, streamHandle, request)
+            val status = stream match
+              case Some(value) =>
+                value.submitTracked(
+                  launchResources(invocation)
+                ) { trackedStreamHandle =>
+                  module.submit(
+                    handle,
+                    trackedStreamHandle,
+                    request
+                  )
+                }
+              case None =>
+                module.submit(handle, streamHandle, request)
             if status.succeeded then Right(())
             else
               Left(
@@ -1155,6 +1337,14 @@ final class CudaFunction[Args <: Tuple] private[cuda] (
       case Some(value) =>
         value.requireOpen()
         Right(value.nativeHandle)
+
+  private def launchResources(
+      invocation: KernelInvocation[Args]
+  ): Vector[CudaInFlightResource] =
+    val buffers = invocation.arguments.productIterator.collect {
+      case resource: CudaInFlightResource => resource
+    }.toVector
+    module +: buffers
 
 object CudaDriverFailure:
   private[cuda] def fromStatus(

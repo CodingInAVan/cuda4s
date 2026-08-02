@@ -80,11 +80,15 @@ transfers also expose explicit-stream asynchronous overloads backed by
 markers through `record`, `query`, and `synchronize`, while
 `CudaStream.waitFor` establishes GPU-side stream dependencies. Pinned/device
 copies accept independently validated source and destination element ranges.
-Until automatic in-flight resource retention is implemented, callers must
-synchronize before reading, mutating, or closing resources used by outstanding
-work. Source-map artifacts retain known IR spans, while automatic Scala
-source-position capture and NVRTC diagnostic remapping remain later Scala 3
-macro/compiler iterations.
+Explicit-stream copies and kernel launches automatically retain participating
+pinned buffers, device buffers, and modules until stream or recorded-event
+completion. Closing an in-flight resource makes it unavailable immediately and
+defers its native release. Pinned host reads and writes are rejected while a
+transfer is outstanding. Closing a stream with tracked work synchronizes before
+destroying it. Default-stream launches still require callers to preserve their
+resources through completion. Source-map artifacts retain known IR spans,
+while automatic Scala source-position capture and NVRTC diagnostic remapping
+remain later Scala 3 macro/compiler iterations.
 
 ## Build
 

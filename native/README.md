@@ -19,9 +19,10 @@ The launcher restores the caller's previous current context after submission
 and does not synchronize the CUDA context or stream. Scala runtime objects own
 retained primary contexts, loaded modules, device allocations, and explicit
 streams and events. They also own page-locked host allocations surfaced as
-internal direct buffers. Asynchronous copy callers must keep participating
-resources alive until stream or event completion. Automatic in-flight lifetime
-tracking remains a future runtime responsibility.
+internal direct buffers. CUDA requires participating resources to remain alive
+until stream or event completion. The Scala runtime enforces that lifetime for
+explicit-stream copies and launches through deferred native release; closing a
+stream with tracked work synchronizes before destruction.
 
 ## Requirements
 

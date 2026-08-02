@@ -274,6 +274,11 @@ class CudaResourcesSuite extends FunSuite:
       Right(())
     )
     assertEquals(
+      intercept[IllegalStateException](destination.toArray).getMessage,
+      "CUDA pinned buffer has in-flight work"
+    )
+    assertEquals(stream.synchronize(), Right(()))
+    assertEquals(
       destination.toArray.toSeq,
       Seq(-1, 0, 20, 30, 40, -1, -1)
     )
@@ -290,6 +295,139 @@ class CudaResourcesSuite extends FunSuite:
       device.copyFromAsync(source, 0, 0, 1, stream)
     )
     context.close()
+
+  test("async copies defer buffer release until stream completion"):
+    val backend = RecordingBackend()
+    val context = openedContext(backend)
+    val source = context.allocatePinned[Int](4).toOption.get
+    val device = context.allocate[Int](4).toOption.get
+    val stream = context.createStream().toOption.get
+
+    source.copyFrom(Array(1, 2, 3, 4))
+    assertEquals(device.copyFromAsync(source, stream), Right(()))
+    source.close()
+    device.close()
+
+    assert(!source.isOpen)
+    assert(!device.isOpen)
+    assert(!backend.events.exists(_.startsWith("freePinned:")))
+    assert(!backend.events.exists(_.startsWith("free:")))
+
+    assertEquals(stream.synchronize(), Right(()))
+    assert(backend.events.exists(_.startsWith("freePinned:")))
+    assert(backend.events.exists(_.startsWith("free:")))
+
+    context.close()
+
+  test("completed events release the stream work they captured"):
+    val backend = RecordingBackend()
+    val context = openedContext(backend)
+    val source = context.allocatePinned[Int](4).toOption.get
+    val device = context.allocate[Int](4).toOption.get
+    val stream = context.createStream().toOption.get
+    val event = context.createEvent().toOption.get
+
+    source.copyFrom(Array(1, 2, 3, 4))
+    assertEquals(device.copyFromAsync(source, stream), Right(()))
+    assertEquals(event.record(stream), Right(()))
+    source.close()
+    device.close()
+
+    assertEquals(event.query(), Right(false))
+    assert(!backend.events.exists(_.startsWith("freePinned:")))
+    backend.queryEventComplete = true
+    assertEquals(event.query(), Right(true))
+    assert(backend.events.exists(_.startsWith("freePinned:")))
+    assert(backend.events.exists(_.startsWith("free:")))
+
+    context.close()
+
+  test("failed stream synchronization retains deferred resources"):
+    val backend = RecordingBackend()
+    val context = openedContext(backend)
+    val source = context.allocatePinned[Int](4).toOption.get
+    val device = context.allocate[Int](4).toOption.get
+    val stream = context.createStream().toOption.get
+
+    source.copyFrom(Array(1, 2, 3, 4))
+    assertEquals(device.copyFromAsync(source, stream), Right(()))
+    source.close()
+    device.close()
+    backend.synchronizeStreamStatus =
+      failureStatus("CUDA_ERROR_LAUNCH_FAILED")
+
+    assertEquals(
+      stream.synchronize().swap.toOption.get.operation,
+      "CUDA stream synchronization"
+    )
+    assert(!backend.events.exists(_.startsWith("freePinned:")))
+    assert(!backend.events.exists(_.startsWith("free:")))
+
+    backend.synchronizeStreamStatus = successStatus
+    assertEquals(stream.synchronize(), Right(()))
+    assert(backend.events.exists(_.startsWith("freePinned:")))
+    assert(backend.events.exists(_.startsWith("free:")))
+
+    context.close()
+
+  test("failed async submission releases leases immediately"):
+    val backend = RecordingBackend()
+    val context = openedContext(backend)
+    val source = context.allocatePinned[Int](4).toOption.get
+    val device = context.allocate[Int](4).toOption.get
+    val stream = context.createStream().toOption.get
+    source.copyFrom(Array(1, 2, 3, 4))
+    backend.hostToDeviceStatus =
+      failureStatus("CUDA_ERROR_INVALID_VALUE")
+
+    assertEquals(
+      device
+        .copyFromAsync(source, stream)
+        .swap
+        .toOption
+        .get
+        .operation,
+      "CUDA asynchronous pinned host-to-device copy"
+    )
+
+    source.copyFrom(Array(5, 6, 7, 8))
+    source.close()
+    device.close()
+    assert(backend.events.exists(_.startsWith("freePinned:")))
+    assert(backend.events.exists(_.startsWith("free:")))
+    assert(!backend.events.exists(_.startsWith("synchronizeStream:")))
+
+    context.close()
+
+  test("context close drains tracked work before releasing resources"):
+    val backend = RecordingBackend()
+    val context = openedContext(backend)
+    val stream = context.createStream().toOption.get
+    val source = context.allocatePinned[Int](4).toOption.get
+    val device = context.allocate[Int](4).toOption.get
+
+    source.copyFrom(Array(1, 2, 3, 4))
+    assertEquals(device.copyFromAsync(source, stream), Right(()))
+
+    context.close()
+
+    val lifecycleEvents = backend.events.filter { event =>
+      event.startsWith("synchronizeStream:") ||
+      event.startsWith("freePinned:") ||
+      event.startsWith("free:") ||
+      event.startsWith("destroyStream:") ||
+      event.startsWith("release:")
+    }.toVector
+    assertEquals(
+      lifecycleEvents,
+      Vector(
+        "synchronizeStream:100:400",
+        "freePinned:100:2000",
+        "free:100:1000",
+        "destroyStream:100:400",
+        "release:0"
+      )
+    )
 
   test("device buffers reject pinned buffers from another context"):
     val backend = RecordingBackend()
@@ -651,6 +789,43 @@ class CudaResourcesSuite extends FunSuite:
     )
     context.close()
 
+  test("explicit-stream launches defer module and buffer release"):
+    val backend = RecordingBackend()
+    val dataParam = input[Int]("data")
+    val definition = kernel(
+      "trackedLaunchKernel",
+      params(dataParam)
+    ) { _ => () }
+    val fixture = generatedFixture(definition)
+    val context = openedContext(backend)
+    val module = context.load(fixture.artifact).toOption.get
+    val function = module.function(fixture.kernel).toOption.get
+    val device = context.allocate[Int](4).toOption.get
+    val stream = context.createStream().toOption.get
+
+    assertEquals(
+      function.launch(
+        definition.bind(Tuple1(device)),
+        LaunchConfig(Grid.x(1), LaunchBlock.x(32)),
+        stream
+      ),
+      Right(())
+    )
+    module.close()
+    device.close()
+
+    assert(!module.isOpen)
+    assert(!function.isValid)
+    assert(!device.isOpen)
+    assert(!backend.events.exists(_.startsWith("unload:")))
+    assert(!backend.events.exists(_.startsWith("free:")))
+
+    assertEquals(stream.synchronize(), Right(()))
+    assert(backend.events.exists(_.startsWith("unload:")))
+    assert(backend.events.exists(_.startsWith("free:")))
+
+    context.close()
+
   test("typed function rejects a stream from another context"):
     val backend = RecordingBackend()
     val fixture = generatedFixture("foreignStreamKernel")
@@ -837,12 +1012,12 @@ class CudaResourcesSuite extends FunSuite:
 
   private def generatedFixture(
       name: String
-  ): GeneratedFixture =
+  ): GeneratedFixture[EmptyTuple] =
     generatedFixture(kernel(name, params()) { _ => () })
 
-  private def generatedFixture(
-      definition: Kernel[EmptyTuple]
-  ): GeneratedFixture =
+  private def generatedFixture[Args <: Tuple](
+      definition: Kernel[Args]
+  ): GeneratedFixture[Args] =
     val generatedKernel = CudaCodegen.generate(definition) match
       case Right(value) => value
       case Left(error) => fail(error.message)
@@ -887,9 +1062,9 @@ class CudaResourcesSuite extends FunSuite:
       errorLog = errorLog
     )
 
-  private final case class GeneratedFixture(
-      definition: Kernel[EmptyTuple],
-      kernel: GeneratedKernel[EmptyTuple],
+  private final case class GeneratedFixture[Args <: Tuple](
+      definition: Kernel[Args],
+      kernel: GeneratedKernel[Args],
       artifact: NvrtcArtifact
   )
 
