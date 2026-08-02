@@ -220,9 +220,10 @@ object CudaDsl:
       body: Expr[Int] => Expr[Input]
   )(using
       rule: AccumulatorType[Input, Accumulator],
-      addition: AdditiveType[Accumulator]
+      addition: AdditiveType[Accumulator],
+      position: DslSourcePosition
   ): Expr[Accumulator] =
-    val index = ReductionIndex(indexName)
+    val index = ReductionIndex(indexName, position.span)
     ReduceSum(
       index = index,
       from = from,
@@ -231,31 +232,49 @@ object CudaDsl:
       value = body(index),
       rule = rule,
       addition = addition,
-      policy = policy
+      policy = policy,
+      span = position.span
     )
 
   def local[T](
       name: String,
       initial: Expr[T]
-  )(using valueType: CudaType[T], builder: BlockBuilder): LocalVariable[T] =
-    val variable = LocalVariable(name, valueType)
-    builder.append(LocalDeclaration(variable, initial))
+  )(using
+      valueType: CudaType[T],
+      builder: BlockBuilder,
+      position: DslSourcePosition
+  ): LocalVariable[T] =
+    val variable = LocalVariable(name, valueType, position.span)
+    builder.append(LocalDeclaration(variable, initial, position.span))
     variable
 
   def localArray[T](
       name: String,
       elementCount: Int
-  )(using valueType: CudaType[T], builder: BlockBuilder): LocalArray[T] =
-    val array = LocalArray(name, valueType, elementCount)
-    builder.append(LocalArrayDeclaration(array))
+  )(using
+      valueType: CudaType[T],
+      builder: BlockBuilder,
+      position: DslSourcePosition
+  ): LocalArray[T] =
+    val array = LocalArray(name, valueType, elementCount, position.span)
+    builder.append(LocalArrayDeclaration(array, position.span))
     array
 
   def sharedArray[T](
       name: String,
       elementCount: Int
-  )(using valueType: CudaType[T], builder: BlockBuilder): SharedArray[T, Rank1] =
+  )(using
+      valueType: CudaType[T],
+      builder: BlockBuilder,
+      position: DslSourcePosition
+  ): SharedArray[T, Rank1] =
     val memory: SharedArray[T, Rank1] =
-      SharedArray(name, valueType, StaticSharedMemory(elementCount))
+      SharedArray(
+        name,
+        valueType,
+        StaticSharedMemory(elementCount),
+        position.span
+      )
     builder.declareShared(memory)
     memory
 
@@ -263,7 +282,11 @@ object CudaDsl:
       name: String,
       rows: Int,
       columns: Int
-  )(using valueType: CudaType[T], builder: BlockBuilder): SharedArray[T, Rank2] =
+  )(using
+      valueType: CudaType[T],
+      builder: BlockBuilder,
+      position: DslSourcePosition
+  ): SharedArray[T, Rank2] =
     sharedArray2D(name, rows, columns, columns)
 
   def sharedArray2D[T](
@@ -271,21 +294,30 @@ object CudaDsl:
       rows: Int,
       columns: Int,
       rowStride: Int
-  )(using valueType: CudaType[T], builder: BlockBuilder): SharedArray[T, Rank2] =
+  )(using
+      valueType: CudaType[T],
+      builder: BlockBuilder,
+      position: DslSourcePosition
+  ): SharedArray[T, Rank2] =
     val memory: SharedArray[T, Rank2] =
       SharedArray(
         name,
         valueType,
-        StaticSharedMemory.twoDimensional(rows, columns, rowStride)
+        StaticSharedMemory.twoDimensional(rows, columns, rowStride),
+        position.span
       )
     builder.declareShared(memory)
     memory
 
   def dynamicSharedArray[T](
       name: String
-  )(using valueType: CudaType[T], builder: BlockBuilder): SharedArray[T, Rank1] =
+  )(using
+      valueType: CudaType[T],
+      builder: BlockBuilder,
+      position: DslSourcePosition
+  ): SharedArray[T, Rank1] =
     val memory: SharedArray[T, Rank1] =
-      SharedArray(name, valueType, DynamicSharedMemory)
+      SharedArray(name, valueType, DynamicSharedMemory, position.span)
     builder.declareShared(memory)
     memory
 
@@ -294,7 +326,11 @@ object CudaDsl:
       depth: Int,
       rows: Int,
       columns: Int
-  )(using valueType: CudaType[T], builder: BlockBuilder): SharedArray[T, Rank3] =
+  )(using
+      valueType: CudaType[T],
+      builder: BlockBuilder,
+      position: DslSourcePosition
+  ): SharedArray[T, Rank3] =
     sharedArray3D(name, depth, rows, columns, columns)
 
   def sharedArray3D[T](
@@ -303,7 +339,11 @@ object CudaDsl:
       rows: Int,
       columns: Int,
       rowStride: Int
-  )(using valueType: CudaType[T], builder: BlockBuilder): SharedArray[T, Rank3] =
+  )(using
+      valueType: CudaType[T],
+      builder: BlockBuilder,
+      position: DslSourcePosition
+  ): SharedArray[T, Rank3] =
     val memory: SharedArray[T, Rank3] =
       SharedArray(
         name,
@@ -313,7 +353,8 @@ object CudaDsl:
           rows,
           columns,
           rowStride
-        )
+        ),
+        position.span
       )
     builder.declareShared(memory)
     memory
@@ -321,8 +362,11 @@ object CudaDsl:
   def constantArray[T](
       name: String,
       elementCount: Int
-  )(using valueType: CudaType[T]): ConstantArray[T] =
-    ConstantArray(name, valueType, elementCount)
+  )(using
+      valueType: CudaType[T],
+      position: DslSourcePosition
+  ): ConstantArray[T] =
+    ConstantArray(name, valueType, elementCount, position.span)
 
   def module(
       constants: Iterable[ConstantArray[?]] = Vector.empty,
@@ -336,8 +380,12 @@ object CudaDsl:
   def accumulate[T](
       target: LocalVariable[T],
       value: Expr[T]
-  )(using addition: AdditiveType[T], builder: BlockBuilder): Unit =
-    builder.append(Accumulate(target, value, addition))
+  )(using
+      addition: AdditiveType[T],
+      builder: BlockBuilder,
+      position: DslSourcePosition
+  ): Unit =
+    builder.append(Accumulate(target, value, addition, position.span))
 
   def gpuFor(
       indexName: String,
@@ -345,24 +393,26 @@ object CudaDsl:
       until: Expr[Int]
   )(
       body: Expr[Int] => (BlockBuilder ?=> Unit)
-  )(using parent: BlockBuilder): Unit =
-    val index = LoopIndex(indexName)
+  )(using parent: BlockBuilder, position: DslSourcePosition): Unit =
+    val index = LoopIndex(indexName, position.span)
     val nested = parent.nested()
     body(index)(using nested)
-    parent.append(ForLoop(index, from, until, nested.result()))
+    parent.append(
+      ForLoop(index, from, until, nested.result(), position.span)
+    )
 
   def when(condition: Expr[Boolean])(
       body: BlockBuilder ?=> Unit
-  )(using parent: BlockBuilder): Unit =
+  )(using parent: BlockBuilder, position: DslSourcePosition): Unit =
     val nested = parent.nested()
     body(using nested)
-    parent.append(IfThen(condition, nested.result()))
+    parent.append(IfThen(condition, nested.result(), span = position.span))
 
   def gpuIf(condition: Expr[Boolean])(
       thenBody: BlockBuilder ?=> Unit
   )(
       elseBody: BlockBuilder ?=> Unit
-  )(using parent: BlockBuilder): Unit =
+  )(using parent: BlockBuilder, position: DslSourcePosition): Unit =
     val thenBuilder = parent.nested()
     thenBody(using thenBuilder)
     val elseBuilder = parent.nested()
@@ -371,12 +421,16 @@ object CudaDsl:
       IfThen(
         condition = condition,
         thenBlock = thenBuilder.result(),
-        elseBlock = Some(elseBuilder.result())
+        elseBlock = Some(elseBuilder.result()),
+        span = position.span
       )
     )
 
-  def barrier()(using builder: BlockBuilder): Unit =
-    builder.append(Barrier())
+  def barrier()(using
+      builder: BlockBuilder,
+      position: DslSourcePosition
+  ): Unit =
+    builder.append(Barrier(position.span))
 
   object threadIdx:
     def x: Expr[Int] = Intrinsic("threadIdx.x", I32)
@@ -548,5 +602,8 @@ object CudaDsl:
   extension [T, Space <: AddressSpace](
       place: Place[T, Space, ReadWrite]
   )
-    infix def :=(value: Expr[T])(using builder: BlockBuilder): Unit =
-      builder.append(Store(place, value))
+    infix def :=(value: Expr[T])(using
+        builder: BlockBuilder,
+        position: DslSourcePosition
+    ): Unit =
+      builder.append(Store(place, value, position.span))

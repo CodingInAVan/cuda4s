@@ -37,7 +37,9 @@ class TypedIrSuite extends FunSuite:
     val branch = definition.body.statements.head.asInstanceOf[IfThen]
     assertEquals(branch.thenBlock.statements.size, 2)
     assert(branch.thenBlock.statements.head.isInstanceOf[Store[?, ?]])
-    assertEquals(branch.thenBlock.statements(1), Barrier())
+    val barrierStatement =
+      branch.thenBlock.statements(1).asInstanceOf[Barrier]
+    assertNotEquals(barrierStatement.span, SourceSpan.Unknown)
 
   test("read-only buffer elements can be loaded"):
     val source = input[Float]("source")

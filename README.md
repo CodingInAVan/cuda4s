@@ -94,8 +94,9 @@ outstanding. Closing a stream with tracked work synchronizes before destroying
 it, and closing a context synchronizes pending default-stream launches before
 native teardown. NVRTC diagnostics retain generated CUDA locations and map them
 to the closest known Scala `SourceSpan` while preserving the original compiler
-log. Automatic Scala source-position capture remains a later Scala 3 macro
-iteration.
+log. Scala 3 call-site capture now populates spans for DSL declarations,
+stores, accumulation, structured control flow, reductions, and barriers.
+Fine-grained expression/operator spans remain a later increment.
 
 ## Build
 

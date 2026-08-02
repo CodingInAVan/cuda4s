@@ -53,10 +53,13 @@ class MemorySpaceSuite extends FunSuite:
     assertEquals(tileLayout.rowMajorStrides, Vector(33L, 1L))
     assertEquals(tileLayout.physicalElementCount, 32L * 33L)
     assertEquals(definition.sharedMemory.head.rankWitness.rank, 2)
-    assertEquals(
-      definition.body.statements.head,
-      LocalArrayDeclaration(LocalArray("scratch", F32, 2))
-    )
+    val localArrayDeclaration = definition.body.statements.head
+      .asInstanceOf[LocalArrayDeclaration[Float]]
+    assertEquals(localArrayDeclaration.array.name, "scratch")
+    assertEquals(localArrayDeclaration.array.valueType, F32)
+    assertEquals(localArrayDeclaration.array.elementCount, 2)
+    assertNotEquals(localArrayDeclaration.array.span, SourceSpan.Unknown)
+    assertNotEquals(localArrayDeclaration.span, SourceSpan.Unknown)
     assertEquals(ModuleValidator.validate(moduleIr), ValidationResult(Vector.empty))
     assertEquals(definition.params, Vector(outputBuffer))
 
