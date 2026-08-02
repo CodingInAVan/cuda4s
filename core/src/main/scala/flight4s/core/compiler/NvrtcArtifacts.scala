@@ -35,10 +35,13 @@ final case class NvrtcVersion(
   override def toString: String =
     s"$major.$minor"
 
+sealed trait NvrtcCompilationError:
+  def message: String
+
 final case class NvrtcVersionQueryFailure(
     resultCode: Int,
     resultName: String
-):
+) extends NvrtcCompilationError:
   require(resultCode != 0, "an NVRTC version failure must have a nonzero code")
   require(resultName.nonEmpty, "an NVRTC version failure must have a name")
 
@@ -93,6 +96,7 @@ final case class NvrtcCompileFailure(
     target: ComputeCapability,
     compilerOptions: NvrtcCompileOptions,
     programName: String
-) extends NvrtcCompilation:
+) extends NvrtcCompilation,
+      NvrtcCompilationError:
   def message: String =
     s"NVRTC compilation failed with $resultName ($resultCode)"

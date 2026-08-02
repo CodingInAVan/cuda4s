@@ -1,0 +1,282 @@
+package flight4s.runtime.cuda
+
+import java.nio.charset.StandardCharsets
+import java.util.concurrent.{CountDownLatch, Executors, TimeUnit}
+
+import munit.FunSuite
+
+import flight4s.core.codegen.{CompilerOptions, GeneratedCudaModule, SourceMap, SourceMapEntry}
+import flight4s.core.compiler.*
+import flight4s.core.ir.SourceSpan
+
+class NvrtcCompilationCacheSuite extends FunSuite:
+  private val target = ComputeCapability(8, 0)
+  private val version = NvrtcVersion(13, 0)
+  private val programName = "cached_kernel.cu"
+
+  test("a cache hit rebinds PTX metadata to the current generated module"):
+    val first = generated("FirstCallSite.scala")
+    val remapped = first.copy(sourceMap = sourceMap("SecondCallSite.scala"))
+    val backend = RecordingBackend()
+    val cache = NvrtcCompilationCache(2, backend)
+
+    val initialArtifact = compiled(cache, first)
+    val cachedArtifact = compiled(cache, remapped)
+
+    assertEquals(backend.compileCount, 1)
+    assertEquals(cache.entryCount, 1)
+    assertEquals(initialArtifact.generated, first)
+    assertEquals(cachedArtifact.generated, remapped)
+    assertEquals(cachedArtifact.generated.sourceMap, remapped.sourceMap)
+    assertEquals(ptxText(cachedArtifact), ptxText(initialArtifact))
+
+  test("compiler-relevant input changes miss the cache"):
+    val backend = RecordingBackend()
+    val cache = NvrtcCompilationCache(3, backend)
+    val initial = generated("Initial.scala")
+
+    compiled(cache, initial)
+    compiled(
+      cache,
+      initial.copy(cudaSource = initial.cudaSource + "// changed\n")
+    )
+    compiled(cache, initial, target = ComputeCapability(9, 0))
+
+    assertEquals(backend.compileCount, 3)
+    assertEquals(cache.entryCount, 3)
+
+  test("failed compilations are shared in flight but not retained"):
+    val backend = RecordingBackend()
+    backend.compileAction = (generated, target, programName, attempt) =>
+      if attempt == 1 then
+        Left(failedCompilation(generated, target, programName))
+      else Right(successfulArtifact(generated, target, programName))
+    val cache = NvrtcCompilationCache(2, backend)
+    val module = generated("Retry.scala")
+
+    val first = cache.compile(module, target, programName)
+    val second = cache.compile(module, target, programName)
+
+    assert(first.isLeft)
+    assert(second.isRight)
+    assertEquals(backend.compileCount, 2)
+    assertEquals(cache.entryCount, 1)
+
+  test("least recently used completed entries are evicted at the configured bound"):
+    val backend = RecordingBackend()
+    val cache = NvrtcCompilationCache(2, backend)
+    val first = generated("First.scala")
+    val second = first.copy(cudaSource = first.cudaSource + "// second\n")
+    val third = first.copy(cudaSource = first.cudaSource + "// third\n")
+
+    compiled(cache, first)
+    compiled(cache, second)
+    compiled(cache, first)
+    compiled(cache, third)
+    compiled(cache, second)
+
+    assertEquals(backend.compileCount, 4)
+    assertEquals(cache.entryCount, 2)
+
+  test("concurrent matching requests compile once and receive independent artifacts"):
+    val backend = RecordingBackend()
+    val started = CountDownLatch(1)
+    val release = CountDownLatch(1)
+    backend.pauseCompile(started, release)
+    val cache = NvrtcCompilationCache(2, backend)
+    val module = generated("Concurrent.scala")
+    val executor = Executors.newFixedThreadPool(2)
+
+    try
+      val first = executor.submit(() => cache.compile(module, target, programName))
+      assert(started.await(1, TimeUnit.SECONDS), "first compilation did not start")
+
+      val second = executor.submit(() => cache.compile(module, target, programName))
+      awaitCondition(backend.versionCount == 2)
+      assert(!second.isDone, "second request did not wait for the active compilation")
+
+      release.countDown()
+      val firstArtifact = first.get(1, TimeUnit.SECONDS) match
+        case Right(value) => value
+        case Left(error) => fail(error.message)
+      val secondArtifact = second.get(1, TimeUnit.SECONDS) match
+        case Right(value) => value
+        case Left(error) => fail(error.message)
+
+      assertEquals(backend.compileCount, 1)
+      assertEquals(firstArtifact.generated, module)
+      assertEquals(secondArtifact.generated, module)
+      assert(!(firstArtifact.ptx.asInstanceOf[AnyRef] eq secondArtifact.ptx.asInstanceOf[AnyRef]))
+    finally
+      release.countDown()
+      executor.shutdownNow()
+
+  test("concurrent failed requests share one result and later requests retry"):
+    val backend = RecordingBackend()
+    val started = CountDownLatch(1)
+    val release = CountDownLatch(1)
+    backend.pauseCompile(started, release)
+    backend.compileAction = (generated, target, programName, _) =>
+      Left(failedCompilation(generated, target, programName))
+    val cache = NvrtcCompilationCache(2, backend)
+    val module = generated("ConcurrentFailure.scala")
+    val executor = Executors.newFixedThreadPool(2)
+
+    try
+      val first = executor.submit(() => cache.compile(module, target, programName))
+      assert(started.await(1, TimeUnit.SECONDS), "first compilation did not start")
+      val second = executor.submit(() => cache.compile(module, target, programName))
+      awaitCondition(backend.versionCount == 2)
+
+      release.countDown()
+      assert(first.get(1, TimeUnit.SECONDS).isLeft)
+      assert(second.get(1, TimeUnit.SECONDS).isLeft)
+      assertEquals(backend.compileCount, 1)
+      assertEquals(cache.entryCount, 0)
+
+      backend.compileAction = (generated, target, programName, _) =>
+        Right(successfulArtifact(generated, target, programName))
+      assert(compiled(cache, module).ptx.nonEmpty)
+      assertEquals(backend.compileCount, 2)
+      assertEquals(cache.entryCount, 1)
+    finally
+      release.countDown()
+      executor.shutdownNow()
+
+  test("version-query failures do not invoke compilation or create entries"):
+    val versionFailure = NvrtcVersionQueryFailure(
+      resultCode = 7,
+      resultName = "NVRTC_ERROR_INTERNAL_ERROR"
+    )
+    val backend = RecordingBackend(Left(versionFailure))
+    val cache = NvrtcCompilationCache(2, backend)
+
+    val result = cache.compile(generated("Version.scala"), target, programName)
+
+    assertEquals(result, Left(versionFailure))
+    assertEquals(backend.compileCount, 0)
+    assertEquals(cache.entryCount, 0)
+
+  private def compiled(
+      cache: NvrtcCompilationCache,
+      generated: GeneratedCudaModule,
+      target: ComputeCapability = target
+  ): NvrtcArtifact =
+    cache.compile(generated, target, programName) match
+      case Right(artifact) => artifact
+      case Left(error) => fail(error.message)
+
+  private def generated(sourceFile: String): GeneratedCudaModule =
+    GeneratedCudaModule(
+      cudaSource =
+        "extern \"C\" __global__ void cachedKernel() {}\n",
+      sourceMap = sourceMap(sourceFile),
+      compilerOptions = CompilerOptions(),
+      kernels = Vector.empty
+    )
+
+  private def sourceMap(sourceFile: String): SourceMap =
+    SourceMap(
+      Vector(
+        SourceMapEntry(
+          generatedLine = 1,
+          sourceSpan = SourceSpan(sourceFile, 10, 3, 10, 27)
+        )
+      )
+    )
+
+  private def successfulArtifact(
+      generated: GeneratedCudaModule,
+      target: ComputeCapability,
+      programName: String
+  ): NvrtcArtifact =
+    NvrtcArtifact(
+      generated = generated,
+      ptx = IArray.unsafeFromArray(
+        ".version 8.0\n.entry cachedKernel() {}\n"
+          .getBytes(StandardCharsets.UTF_8)
+      ),
+      compileLog = "cached_kernel.cu(1): warning: cached compilation",
+      nvrtcVersion = version,
+      target = target,
+      compilerOptions = NvrtcCompileOptions.resolve(
+        generated.compilerOptions,
+        target
+      ),
+      programName = programName
+    )
+
+  private def failedCompilation(
+      generated: GeneratedCudaModule,
+      target: ComputeCapability,
+      programName: String
+  ): NvrtcCompileFailure =
+    NvrtcCompileFailure(
+      generated = generated,
+      resultCode = 6,
+      resultName = "NVRTC_ERROR_COMPILATION",
+      compileLog = "cached_kernel.cu(1): error: broken source",
+      nvrtcVersion = version,
+      target = target,
+      compilerOptions = NvrtcCompileOptions.resolve(
+        generated.compilerOptions,
+        target
+      ),
+      programName = programName
+    )
+
+  private def ptxText(artifact: NvrtcArtifact): String =
+    String(
+      IArray.genericWrapArray(artifact.ptx).toArray,
+      StandardCharsets.UTF_8
+    )
+
+  private def awaitCondition(condition: => Boolean): Unit =
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1)
+    while !condition && System.nanoTime() < deadline do Thread.sleep(5)
+    assert(condition, "condition did not become true before the timeout")
+
+  private final class RecordingBackend(
+      private var versionResponse: Either[NvrtcVersionQueryFailure, NvrtcVersion] =
+        Right(version)
+  ) extends NvrtcCompilerBackend:
+    private var compileAttempts = 0
+    private var versionAttempts = 0
+    private var compileGate = Option.empty[(CountDownLatch, CountDownLatch)]
+
+    var compileAction:
+        (GeneratedCudaModule, ComputeCapability, String, Int) => Either[NvrtcCompileFailure, NvrtcArtifact] =
+      (generated, target, programName, _) =>
+        Right(successfulArtifact(generated, target, programName))
+
+    def compileCount: Int = synchronized(compileAttempts)
+
+    def versionCount: Int = synchronized(versionAttempts)
+
+    def pauseCompile(
+        started: CountDownLatch,
+        release: CountDownLatch
+    ): Unit = synchronized {
+      compileGate = Some(started -> release)
+    }
+
+    override def version(): Either[NvrtcVersionQueryFailure, NvrtcVersion] =
+      synchronized {
+        versionAttempts += 1
+        versionResponse
+      }
+
+    override def compile(
+        generated: GeneratedCudaModule,
+        target: ComputeCapability,
+        programName: String
+    ): Either[NvrtcCompileFailure, NvrtcArtifact] =
+      val (attempt, action, gate) = synchronized {
+        compileAttempts += 1
+        (compileAttempts, compileAction, compileGate)
+      }
+      gate.foreach { case (started, release) =>
+        started.countDown()
+        release.await()
+      }
+      action(generated, target, programName, attempt)

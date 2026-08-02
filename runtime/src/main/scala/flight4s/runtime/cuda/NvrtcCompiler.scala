@@ -4,10 +4,17 @@ import flight4s.core.codegen.GeneratedCudaModule
 import flight4s.core.compiler.*
 import flight4s.runtime.cuda.internal.NativeNvrtcCompiler
 
-object NvrtcCompiler:
-  val DefaultProgramName: String = "flight4s_generated.cu"
+private[cuda] trait NvrtcCompilerBackend:
+  def version(): Either[NvrtcVersionQueryFailure, NvrtcVersion]
 
-  def version(): Either[NvrtcVersionQueryFailure, NvrtcVersion] =
+  def compile(
+      generated: GeneratedCudaModule,
+      target: ComputeCapability,
+      programName: String
+  ): Either[NvrtcCompileFailure, NvrtcArtifact]
+
+private[cuda] object NativeNvrtcCompilerBackend extends NvrtcCompilerBackend:
+  override def version(): Either[NvrtcVersionQueryFailure, NvrtcVersion] =
     val nativeResult = NativeNvrtcCompiler.version()
     if nativeResult.resultCode == 0 then
       Right(
@@ -24,24 +31,12 @@ object NvrtcCompiler:
         )
       )
 
-  def compile(
+  override def compile(
       generated: GeneratedCudaModule,
       target: ComputeCapability,
-      programName: String = DefaultProgramName
+      programName: String
   ): Either[NvrtcCompileFailure, NvrtcArtifact] =
-    require(
-      generated.cudaSource.nonEmpty,
-      "generated CUDA source must not be empty"
-    )
-    require(
-      programName.nonEmpty,
-      "NVRTC program name must not be empty"
-    )
-    require(
-      !programName.contains('\u0000'),
-      "NVRTC program name must not contain a null character"
-    )
-
+    NvrtcCompiler.validateRequest(generated, programName)
     val compilerOptions = NvrtcCompileOptions.resolve(
       generated.compilerOptions,
       target
@@ -81,3 +76,33 @@ object NvrtcCompiler:
           programName = programName
         )
       )
+
+object NvrtcCompiler:
+  val DefaultProgramName: String = "flight4s_generated.cu"
+
+  def version(): Either[NvrtcVersionQueryFailure, NvrtcVersion] =
+    NativeNvrtcCompilerBackend.version()
+
+  def compile(
+      generated: GeneratedCudaModule,
+      target: ComputeCapability,
+      programName: String = DefaultProgramName
+  ): Either[NvrtcCompileFailure, NvrtcArtifact] =
+    NativeNvrtcCompilerBackend.compile(generated, target, programName)
+
+  private[cuda] def validateRequest(
+      generated: GeneratedCudaModule,
+      programName: String
+  ): Unit =
+    require(
+      generated.cudaSource.nonEmpty,
+      "generated CUDA source must not be empty"
+    )
+    require(
+      programName.nonEmpty,
+      "NVRTC program name must not be empty"
+    )
+    require(
+      !programName.contains('\u0000'),
+      "NVRTC program name must not contain a null character"
+    )
