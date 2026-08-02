@@ -153,22 +153,36 @@ int main(int argument_count, char** arguments) {
         "initialize device memory");
     std::copy(host_source.begin(), host_source.end(), pinned_values);
     require_success(
-        driver.copy_host_to_device(
+        driver.copy_host_to_device_async(
             context,
             memory,
             sizeof(std::int32_t),
             pinned_values + 1,
-            sizeof(std::int32_t) * 2),
-        "copy partial host range to device");
+            sizeof(std::int32_t) * 2,
+            stream),
+        "submit partial async host-to-device copy");
+    require_success(
+        driver.record_event(context, event, stream),
+        "record async host-to-device completion");
+    require_success(
+        driver.synchronize_event(context, event),
+        "synchronize async host-to-device completion");
     std::fill(pinned_values, pinned_values + host_source.size(), -1);
     require_success(
-        driver.copy_device_to_host(
+        driver.copy_device_to_host_async(
             context,
             pinned_values + 1,
             memory,
             sizeof(std::int32_t),
-            sizeof(std::int32_t) * 2),
-        "copy partial device range to host");
+            sizeof(std::int32_t) * 2,
+            stream),
+        "submit partial async device-to-host copy");
+    require_success(
+        driver.record_event(context, event, stream),
+        "record async device-to-host completion");
+    require_success(
+        driver.synchronize_event(context, event),
+        "synchronize async device-to-host completion");
     const std::array<std::int32_t, 4> expected_partial{
         -1, 22, 33, -1};
     if (!std::equal(

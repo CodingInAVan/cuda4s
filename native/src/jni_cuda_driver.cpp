@@ -286,6 +286,33 @@ class CudaDriverJniAdapter final {
     return results_.driver_result(status);
   }
 
+  [[nodiscard]] jobject copy_host_to_device_async(
+      jlong context_handle,
+      jlong device_address,
+      jlong device_offset_bytes,
+      jobject source,
+      jlong stream_handle) const {
+    if (device_offset_bytes < 0) {
+      throw std::invalid_argument(
+          "CUDA destination offset must not be negative");
+    }
+    const auto view = flight4s::jni::DirectBufferView::require_exact(
+        environment_,
+        source,
+        "async host copy source");
+    if (has_exception()) {
+      return nullptr;
+    }
+    const auto status = driver_.copy_host_to_device_async(
+        from_java_handle<CUcontext>(context_handle),
+        from_java_device_address(device_address),
+        static_cast<std::uint64_t>(device_offset_bytes),
+        view.data(),
+        static_cast<std::uint64_t>(view.size_bytes()),
+        from_java_handle<CUstream>(stream_handle));
+    return results_.driver_result(status);
+  }
+
   [[nodiscard]] jobject copy_device_to_host(
       jlong context_handle,
       jlong device_address,
@@ -308,6 +335,33 @@ class CudaDriverJniAdapter final {
         from_java_device_address(device_address),
         static_cast<std::uint64_t>(device_offset_bytes),
         static_cast<std::uint64_t>(view.size_bytes()));
+    return results_.driver_result(status);
+  }
+
+  [[nodiscard]] jobject copy_device_to_host_async(
+      jlong context_handle,
+      jlong device_address,
+      jlong device_offset_bytes,
+      jobject destination,
+      jlong stream_handle) const {
+    if (device_offset_bytes < 0) {
+      throw std::invalid_argument(
+          "CUDA source offset must not be negative");
+    }
+    const auto view = flight4s::jni::DirectBufferView::require_exact(
+        environment_,
+        destination,
+        "async host copy destination");
+    if (has_exception()) {
+      return nullptr;
+    }
+    const auto status = driver_.copy_device_to_host_async(
+        from_java_handle<CUcontext>(context_handle),
+        view.data(),
+        from_java_device_address(device_address),
+        static_cast<std::uint64_t>(device_offset_bytes),
+        static_cast<std::uint64_t>(view.size_bytes()),
+        from_java_handle<CUstream>(stream_handle));
     return results_.driver_result(status);
   }
 
@@ -744,6 +798,34 @@ Java_flight4s_runtime_cuda_internal_CudaNativeBindings_copyHostToDevice(
 }
 
 extern "C" JNIEXPORT jobject JNICALL
+Java_flight4s_runtime_cuda_internal_CudaNativeBindings_copyHostToDeviceAsync(
+    JNIEnv* environment,
+    jclass,
+    jlong context_handle,
+    jlong device_address,
+    jlong device_offset_bytes,
+    jobject source,
+    jlong stream_handle) {
+  const flight4s::jni::JniEnvironment jni(environment);
+  try {
+    return CudaDriverJniAdapter(environment)
+        .copy_host_to_device_async(
+            context_handle,
+            device_address,
+            device_offset_bytes,
+            source,
+            stream_handle);
+  } catch (const std::invalid_argument& error) {
+    jni.throw_illegal_argument(error.what());
+  } catch (const std::bad_alloc& error) {
+    jni.throw_out_of_memory(error.what());
+  } catch (const std::exception& error) {
+    jni.throw_runtime_exception(error.what());
+  }
+  return nullptr;
+}
+
+extern "C" JNIEXPORT jobject JNICALL
 Java_flight4s_runtime_cuda_internal_CudaNativeBindings_copyDeviceToHost(
     JNIEnv* environment,
     jclass,
@@ -759,6 +841,34 @@ Java_flight4s_runtime_cuda_internal_CudaNativeBindings_copyDeviceToHost(
             device_address,
             device_offset_bytes,
             destination);
+  } catch (const std::invalid_argument& error) {
+    jni.throw_illegal_argument(error.what());
+  } catch (const std::bad_alloc& error) {
+    jni.throw_out_of_memory(error.what());
+  } catch (const std::exception& error) {
+    jni.throw_runtime_exception(error.what());
+  }
+  return nullptr;
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_flight4s_runtime_cuda_internal_CudaNativeBindings_copyDeviceToHostAsync(
+    JNIEnv* environment,
+    jclass,
+    jlong context_handle,
+    jlong device_address,
+    jlong device_offset_bytes,
+    jobject destination,
+    jlong stream_handle) {
+  const flight4s::jni::JniEnvironment jni(environment);
+  try {
+    return CudaDriverJniAdapter(environment)
+        .copy_device_to_host_async(
+            context_handle,
+            device_address,
+            device_offset_bytes,
+            destination,
+            stream_handle);
   } catch (const std::invalid_argument& error) {
     jni.throw_illegal_argument(error.what());
   } catch (const std::bad_alloc& error) {

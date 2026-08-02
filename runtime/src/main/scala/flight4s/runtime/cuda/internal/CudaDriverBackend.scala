@@ -144,11 +144,27 @@ private[flight4s] trait CudaDriverBackend:
       source: ByteBuffer
   ): NativeCudaDriverStatus
 
+  def copyHostToDeviceAsync(
+      contextHandle: Long,
+      deviceAddress: Long,
+      deviceOffsetBytes: Long,
+      source: ByteBuffer,
+      streamHandle: Long
+  ): NativeCudaDriverStatus
+
   def copyDeviceToHost(
       contextHandle: Long,
       deviceAddress: Long,
       deviceOffsetBytes: Long,
       destination: ByteBuffer
+  ): NativeCudaDriverStatus
+
+  def copyDeviceToHostAsync(
+      contextHandle: Long,
+      deviceAddress: Long,
+      deviceOffsetBytes: Long,
+      destination: ByteBuffer,
+      streamHandle: Long
   ): NativeCudaDriverStatus
 
 private[flight4s] object NativeCudaDriver extends CudaDriverBackend:
@@ -363,6 +379,23 @@ private[flight4s] object NativeCudaDriver extends CudaDriverBackend:
       )
     )
 
+  override def copyHostToDeviceAsync(
+      contextHandle: Long,
+      deviceAddress: Long,
+      deviceOffsetBytes: Long,
+      source: ByteBuffer,
+      streamHandle: Long
+  ): NativeCudaDriverStatus =
+    status(
+      CudaNativeBindings.copyHostToDeviceAsync(
+        contextHandle,
+        deviceAddress,
+        deviceOffsetBytes,
+        source,
+        streamHandle
+      )
+    )
+
   override def copyDeviceToHost(
       contextHandle: Long,
       deviceAddress: Long,
@@ -375,6 +408,23 @@ private[flight4s] object NativeCudaDriver extends CudaDriverBackend:
         deviceAddress,
         deviceOffsetBytes,
         destination
+      )
+    )
+
+  override def copyDeviceToHostAsync(
+      contextHandle: Long,
+      deviceAddress: Long,
+      deviceOffsetBytes: Long,
+      destination: ByteBuffer,
+      streamHandle: Long
+  ): NativeCudaDriverStatus =
+    status(
+      CudaNativeBindings.copyDeviceToHostAsync(
+        contextHandle,
+        deviceAddress,
+        deviceOffsetBytes,
+        destination,
+        streamHandle
       )
     )
 

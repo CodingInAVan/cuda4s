@@ -150,12 +150,28 @@ class CudaDriver final {
       const void* source,
       std::uint64_t size_bytes) const;
 
+  [[nodiscard]] CudaDriverStatus copy_host_to_device_async(
+      CUcontext context,
+      CUdeviceptr destination,
+      std::uint64_t destination_offset_bytes,
+      const void* source,
+      std::uint64_t size_bytes,
+      CUstream stream) const;
+
   [[nodiscard]] CudaDriverStatus copy_device_to_host(
       CUcontext context,
       void* destination,
       CUdeviceptr source,
       std::uint64_t source_offset_bytes,
       std::uint64_t size_bytes) const;
+
+  [[nodiscard]] CudaDriverStatus copy_device_to_host_async(
+      CUcontext context,
+      void* destination,
+      CUdeviceptr source,
+      std::uint64_t source_offset_bytes,
+      std::uint64_t size_bytes,
+      CUstream stream) const;
 };
 
 }  // namespace flight4s::cuda
