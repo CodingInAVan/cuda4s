@@ -87,6 +87,9 @@ int main(int argument_count, char** arguments) {
     require_success(
         driver.synchronize_stream(context, stream),
         "synchronize stream");
+    require_success(
+        driver.synchronize_context(context),
+        "synchronize context");
 
     const auto event_result = driver.create_event(
         context,

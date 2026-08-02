@@ -85,6 +85,7 @@ final class CudaContext private (
     private val backend: CudaDriverBackend
 ) extends AutoCloseable:
   private val lifecycleLock = new Object
+  private val defaultStreamTracker = InFlightTracker[CudaDriverFailure]()
   private var closed = false
   private var resources = Vector.empty[AutoCloseable]
 
@@ -266,9 +267,35 @@ final class CudaContext private (
         )
     }
 
+  def synchronize(): Either[CudaDriverFailure, Unit] =
+    lifecycleLock.synchronized {
+      requireOpen()
+      val status = backend.synchronizeContext(handle)
+      if status.succeeded then completeTrackedWork()
+      else
+        Left(
+          CudaDriverFailure.fromStatus(
+            "CUDA context synchronization",
+            status
+          )
+        )
+    }
+
   override def close(): Unit =
     lifecycleLock.synchronized {
       if !closed then
+        if defaultStreamTracker.hasPending then
+          val synchronization = backend.synchronizeContext(handle)
+          if !synchronization.succeeded then
+            throw CudaDriverException(
+              CudaDriverFailure.fromStatus(
+                "CUDA context synchronization during close",
+                synchronization
+              )
+            )
+          completeTrackedWork() match
+            case Left(failure) => throw CudaDriverException(failure)
+            case Right(()) => ()
         resources.reverse.foreach(_.close())
         val status = backend.releasePrimaryContext(deviceOrdinal)
         if !status.succeeded then
@@ -290,6 +317,61 @@ final class CudaContext private (
 
   private[cuda] def unregister(resource: AutoCloseable): Unit =
     resources = resources.filterNot(_ eq resource)
+
+  private[cuda] def submitDefaultTracked(
+      resources: Vector[CudaInFlightResource]
+  )(
+      submit: => NativeCudaDriverStatus
+  ): NativeCudaDriverStatus =
+    lifecycleLock.synchronized {
+      requireOpen()
+      val batch = acquireBatch(resources)
+      try
+        val status = submit
+        if status.succeeded then defaultStreamTracker.add(batch)
+        else releaseFailedSubmission(batch)
+        status
+      catch
+        case NonFatal(error) =>
+          releaseFailedSubmission(batch)
+          throw error
+    }
+
+  private def completeTrackedWork()
+      : Either[CudaDriverFailure, Unit] =
+    var firstFailure = Option.empty[CudaDriverFailure]
+
+    def retainFirst(result: Either[CudaDriverFailure, Unit]): Unit =
+      result match
+        case Left(failure) if firstFailure.isEmpty =>
+          firstFailure = Some(failure)
+        case _ => ()
+
+    retainFirst(defaultStreamTracker.completePending())
+    resources.foreach {
+      case stream: CudaStream =>
+        retainFirst(stream.completeAfterContextSynchronization())
+      case _ => ()
+    }
+    firstFailure.toLeft(())
+
+  private def acquireBatch(
+      resources: Vector[CudaInFlightResource]
+  ): InFlightBatch[CudaDriverFailure] =
+    val uniqueResources = resources.foldLeft(
+      Vector.empty[CudaInFlightResource]
+    ) { (unique, resource) =>
+      if unique.exists(_ eq resource) then unique
+      else unique :+ resource
+    }
+    InFlightBatch(uniqueResources.map(_.acquireInFlight()))
+
+  private def releaseFailedSubmission(
+      batch: InFlightBatch[CudaDriverFailure]
+  ): Unit =
+    batch.complete() match
+      case Left(failure) => throw CudaDriverException(failure)
+      case Right(()) => ()
 
   private[flight4s] def nativeHandle: Long =
     lifecycleLock.synchronized {
@@ -343,8 +425,7 @@ final class CudaStream private[cuda] (
     private val backend: CudaDriverBackend
 ) extends AutoCloseable:
   private var closed = false
-  private var pendingBatches =
-    Vector.empty[InFlightBatch[CudaDriverFailure]]
+  private val tracker = InFlightTracker[CudaDriverFailure]()
 
   def isOpen: Boolean =
     context.synchronizedLifecycle(!closed && context.isOpen)
@@ -356,7 +437,7 @@ final class CudaStream private[cuda] (
         context.nativeHandle,
         handle
       )
-      if status.succeeded then completePendingBatches()
+      if status.succeeded then tracker.completePending()
       else
         Left(
           CudaDriverFailure.fromStatus(
@@ -393,7 +474,7 @@ final class CudaStream private[cuda] (
     context.synchronizedLifecycle {
       if !closed then
         context.requireOpen()
-        if pendingBatches.exists(batch => !batch.isComplete) then
+        if tracker.hasPending then
           val synchronization = backend.synchronizeStream(
             context.nativeHandle,
             handle
@@ -405,7 +486,7 @@ final class CudaStream private[cuda] (
                 synchronization
               )
             )
-          completePendingBatches() match
+          tracker.completePending() match
             case Left(failure) => throw CudaDriverException(failure)
             case Right(()) => ()
         val status = backend.destroyStream(
@@ -441,7 +522,6 @@ final class CudaStream private[cuda] (
   ): NativeCudaDriverStatus =
     context.synchronizedLifecycle {
       requireOpen()
-      pruneCompletedBatches()
       val uniqueResources = resources.foldLeft(
         Vector.empty[CudaInFlightResource]
       ) { (unique, resource) =>
@@ -453,7 +533,7 @@ final class CudaStream private[cuda] (
       )
       try
         val status = submit(handle)
-        if status.succeeded then pendingBatches :+= batch
+        if status.succeeded then tracker.add(batch)
         else releaseFailedSubmission(batch)
         status
       catch
@@ -466,40 +546,19 @@ final class CudaStream private[cuda] (
       : Vector[InFlightBatch[CudaDriverFailure]] =
     context.synchronizedLifecycle {
       requireOpen()
-      pruneCompletedBatches()
-      pendingBatches
+      tracker.snapshot()
     }
 
   private[cuda] def completeBatches(
       batches: Vector[InFlightBatch[CudaDriverFailure]]
   ): Either[CudaDriverFailure, Unit] =
     context.synchronizedLifecycle {
-      val result = completeAll(batches)
-      pruneCompletedBatches()
-      result
+      tracker.complete(batches)
     }
 
-  private def completePendingBatches()
+  private[cuda] def completeAfterContextSynchronization()
       : Either[CudaDriverFailure, Unit] =
-    val batches = pendingBatches
-    val result = completeAll(batches)
-    pruneCompletedBatches()
-    result
-
-  private def completeAll(
-      batches: Vector[InFlightBatch[CudaDriverFailure]]
-  ): Either[CudaDriverFailure, Unit] =
-    var firstFailure = Option.empty[CudaDriverFailure]
-    batches.foreach { batch =>
-      batch.complete() match
-        case Left(failure) if firstFailure.isEmpty =>
-          firstFailure = Some(failure)
-        case _ => ()
-    }
-    firstFailure.toLeft(())
-
-  private def pruneCompletedBatches(): Unit =
-    pendingBatches = pendingBatches.filterNot(_.isComplete)
+    tracker.completePending()
 
   private def releaseFailedSubmission(
       batch: InFlightBatch[CudaDriverFailure]
@@ -1261,7 +1320,11 @@ final class CudaFunction[Args <: Tuple] private[cuda] (
                   )
                 }
               case None =>
-                module.submit(handle, streamHandle, request)
+                module.context.submitDefaultTracked(
+                  launchResources(invocation)
+                ) {
+                  module.submit(handle, streamHandle, request)
+                }
             if status.succeeded then Right(())
             else
               Left(

@@ -826,6 +826,140 @@ class CudaResourcesSuite extends FunSuite:
 
     context.close()
 
+  test("default-stream launches defer resources until context completion"):
+    val backend = RecordingBackend()
+    val dataParam = input[Int]("data")
+    val definition = kernel(
+      "defaultTrackedLaunchKernel",
+      params(dataParam)
+    ) { _ => () }
+    val fixture = generatedFixture(definition)
+    val context = openedContext(backend)
+    val module = context.load(fixture.artifact).toOption.get
+    val function = module.function(fixture.kernel).toOption.get
+    val device = context.allocate[Int](4).toOption.get
+
+    assertEquals(
+      function.launch(
+        definition.bind(Tuple1(device)),
+        LaunchConfig(Grid.x(1), LaunchBlock.x(32))
+      ),
+      Right(())
+    )
+    module.close()
+    device.close()
+
+    assert(!backend.events.exists(_.startsWith("unload:")))
+    assert(!backend.events.exists(_.startsWith("free:")))
+    assertEquals(context.synchronize(), Right(()))
+    assert(backend.events.contains("synchronizeContext:100"))
+    assert(backend.events.exists(_.startsWith("unload:")))
+    assert(backend.events.exists(_.startsWith("free:")))
+
+    context.close()
+
+  test("failed context synchronization retains default-stream resources"):
+    val backend = RecordingBackend()
+    val dataParam = input[Int]("data")
+    val definition = kernel(
+      "failedDefaultCompletionKernel",
+      params(dataParam)
+    ) { _ => () }
+    val fixture = generatedFixture(definition)
+    val context = openedContext(backend)
+    val module = context.load(fixture.artifact).toOption.get
+    val function = module.function(fixture.kernel).toOption.get
+    val device = context.allocate[Int](4).toOption.get
+
+    assertEquals(
+      function.launch(
+        definition.bind(Tuple1(device)),
+        LaunchConfig(Grid.x(1), LaunchBlock.x(32))
+      ),
+      Right(())
+    )
+    module.close()
+    device.close()
+    backend.synchronizeContextStatus =
+      failureStatus("CUDA_ERROR_LAUNCH_FAILED")
+
+    assertEquals(
+      context.synchronize().swap.toOption.get.operation,
+      "CUDA context synchronization"
+    )
+    assert(!backend.events.exists(_.startsWith("unload:")))
+    assert(!backend.events.exists(_.startsWith("free:")))
+
+    backend.synchronizeContextStatus = successStatus
+    assertEquals(context.synchronize(), Right(()))
+    assert(backend.events.exists(_.startsWith("unload:")))
+    assert(backend.events.exists(_.startsWith("free:")))
+    context.close()
+
+  test("context close synchronizes default-stream work before release"):
+    val backend = RecordingBackend()
+    val fixture = generatedFixture("defaultCloseKernel")
+    val context = openedContext(backend)
+    val module = context.load(fixture.artifact).toOption.get
+    val function = module.function(fixture.kernel).toOption.get
+
+    assertEquals(
+      function.launch(
+        fixture.definition.bind(EmptyTuple),
+        LaunchConfig(Grid.x(1), LaunchBlock.x(1))
+      ),
+      Right(())
+    )
+    module.close()
+    backend.synchronizeContextStatus =
+      failureStatus("CUDA_ERROR_LAUNCH_FAILED")
+
+    val failure = intercept[CudaDriverException](context.close())
+    assertEquals(
+      failure.failure.operation,
+      "CUDA context synchronization during close"
+    )
+    assert(context.isOpen)
+    assert(!backend.events.exists(_.startsWith("unload:")))
+    assert(!backend.events.exists(_.startsWith("release:")))
+
+    backend.synchronizeContextStatus = successStatus
+    context.close()
+    val synchronizationIndex =
+      backend.events.lastIndexOf("synchronizeContext:100")
+    val unloadIndex = backend.events.indexWhere(_.startsWith("unload:"))
+    val releaseIndex = backend.events.indexWhere(_.startsWith("release:"))
+    assert(synchronizationIndex < unloadIndex)
+    assert(unloadIndex < releaseIndex)
+
+  test("context synchronization completes explicit-stream trackers"):
+    val backend = RecordingBackend()
+    val context = openedContext(backend)
+    val pinned = context.allocatePinned[Int](4).toOption.get
+    val device = context.allocate[Int](4).toOption.get
+    val stream = context.createStream().toOption.get
+
+    pinned.copyFrom(Array(1, 2, 3, 4))
+    assertEquals(
+      device.copyFromAsync(pinned, stream),
+      Right(())
+    )
+    pinned.close()
+    device.close()
+
+    assertEquals(context.synchronize(), Right(()))
+    assert(backend.events.exists(_.startsWith("freePinned:")))
+    assert(backend.events.exists(_.startsWith("free:")))
+
+    val streamSynchronizationsBeforeClose =
+      backend.events.count(_.startsWith("synchronizeStream:"))
+    stream.close()
+    assertEquals(
+      backend.events.count(_.startsWith("synchronizeStream:")),
+      streamSynchronizationsBeforeClose
+    )
+    context.close()
+
   test("typed function rejects a stream from another context"):
     val backend = RecordingBackend()
     val fixture = generatedFixture("foreignStreamKernel")
@@ -1074,6 +1208,7 @@ class CudaResourcesSuite extends FunSuite:
     var unloadStatus: NativeCudaDriverStatus = successStatus
     var resolveStatus: NativeCudaDriverStatus = successStatus
     var releaseStatus: NativeCudaDriverStatus = successStatus
+    var synchronizeContextStatus: NativeCudaDriverStatus = successStatus
     var launchStatus: NativeCudaDriverStatus = successStatus
     var createStreamStatus: NativeCudaDriverStatus = successStatus
     var destroyStreamStatus: NativeCudaDriverStatus = successStatus
@@ -1116,6 +1251,12 @@ class CudaResourcesSuite extends FunSuite:
     ): NativeCudaDriverStatus =
       events += s"release:$deviceOrdinal"
       releaseStatus
+
+    override def synchronizeContext(
+        contextHandle: Long
+    ): NativeCudaDriverStatus =
+      events += s"synchronizeContext:$contextHandle"
+      synchronizeContextStatus
 
     override def loadPtx(
         contextHandle: Long,

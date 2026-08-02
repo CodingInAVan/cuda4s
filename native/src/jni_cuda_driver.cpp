@@ -56,6 +56,13 @@ class CudaDriverJniAdapter final {
     return results_.driver_result(status);
   }
 
+  [[nodiscard]] jobject synchronize_context(
+      jlong context_handle) const {
+    const auto status = driver_.synchronize_context(
+        from_java_handle<CUcontext>(context_handle));
+    return results_.driver_result(status);
+  }
+
   [[nodiscard]] jobject load_ptx(
       jlong context_handle,
       jbyteArray ptx) const {
@@ -435,6 +442,25 @@ Java_flight4s_runtime_cuda_internal_CudaNativeBindings_releasePrimaryContext(
   try {
     return CudaDriverJniAdapter(environment)
         .release_primary_context(device_ordinal);
+  } catch (const std::invalid_argument& error) {
+    jni.throw_illegal_argument(error.what());
+  } catch (const std::bad_alloc& error) {
+    jni.throw_out_of_memory(error.what());
+  } catch (const std::exception& error) {
+    jni.throw_runtime_exception(error.what());
+  }
+  return nullptr;
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_flight4s_runtime_cuda_internal_CudaNativeBindings_synchronizeContext(
+    JNIEnv* environment,
+    jclass,
+    jlong context_handle) {
+  const flight4s::jni::JniEnvironment jni(environment);
+  try {
+    return CudaDriverJniAdapter(environment)
+        .synchronize_context(context_handle);
   } catch (const std::invalid_argument& error) {
     jni.throw_illegal_argument(error.what());
   } catch (const std::bad_alloc& error) {

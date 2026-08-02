@@ -11,7 +11,8 @@ operations:
 - allocate page-locked host memory, expose an exact JNI direct-buffer view, and
   release the native allocation;
 - create, record, query, synchronize, wait on, and destroy CUDA events;
-- create, synchronize, and destroy explicit CUDA streams;
+- synchronize CUDA contexts and create, synchronize, and destroy explicit CUDA
+  streams;
 - validate one typed Flight4s launch request, construct CUDA's `void**` kernel
   parameter table, establish the owning context, and call `cuLaunchKernelEx`.
 
@@ -20,9 +21,11 @@ and does not synchronize the CUDA context or stream. Scala runtime objects own
 retained primary contexts, loaded modules, device allocations, and explicit
 streams and events. They also own page-locked host allocations surfaced as
 internal direct buffers. CUDA requires participating resources to remain alive
-until stream or event completion. The Scala runtime enforces that lifetime for
-explicit-stream copies and launches through deferred native release; closing a
-stream with tracked work synchronizes before destruction.
+until completion. The Scala runtime enforces that lifetime through deferred
+native release. Explicit-stream work completes through stream, event, or
+context synchronization; default-stream launches complete through context
+synchronization. Closing a stream or context drains the tracked work owned by
+that completion boundary before native destruction.
 
 ## Requirements
 
