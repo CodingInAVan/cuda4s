@@ -130,6 +130,61 @@ class NvrtcCompilerSuite extends FunSuite:
       case Right(_) =>
         fail("invalid CUDA source unexpectedly compiled")
 
+  test("NVRTC diagnostics remap generated statements to Scala call sites"):
+    assume(
+      nativeLibraryConfigured,
+      "set flight4s.cuda.native.path to run JNI tests"
+    )
+
+    val outputBuffer = output[Float]("output")
+    val definition = kernel(
+      "capturedBrokenStatement",
+      params(outputBuffer)
+    ) { bindings =>
+      bindings.head(threadIdx.x) := literal(1.0f)
+    }
+    val generatedKernel = CudaCodegen.generate(definition) match
+      case Right(value) => value
+      case Left(error) => fail(error.message)
+    val brokenSource = generatedKernel.cudaSource.replace(
+      "0x1.0p0f",
+      "missingGeneratedSymbol"
+    )
+    assertNotEquals(brokenSource, generatedKernel.cudaSource)
+    val generated = GeneratedCudaModule(
+      cudaSource = brokenSource,
+      sourceMap = generatedKernel.sourceMap,
+      compilerOptions = generatedKernel.compilerOptions,
+      kernels = Vector(generatedKernel)
+    )
+    val expectedSpan = generated.sourceMap.entries.last.sourceSpan
+
+    NvrtcCompiler.compile(
+      generated,
+      ComputeCapability(8, 0),
+      "captured_broken_statement.cu"
+    ) match
+      case Left(failure) =>
+        val diagnostic = failure.diagnostics
+          .find(_.severity == NvrtcDiagnosticSeverity.Error)
+          .getOrElse(fail("NVRTC error diagnostic was not parsed"))
+        assertEquals(diagnostic.sourceSpan, Some(expectedSpan))
+        assert(
+          expectedSpan.file
+            .replace('\\', '/')
+            .endsWith("NvrtcCompilerSuite.scala")
+        )
+        assert(expectedSpan.startLine > 0)
+        assert(expectedSpan.startColumn > 0)
+        assert(
+          diagnostic.render.contains(
+            s"Scala source: ${expectedSpan.file}:" +
+              s"${expectedSpan.startLine}:${expectedSpan.startColumn}"
+          )
+        )
+      case Right(_) =>
+        fail("corrupted generated CUDA unexpectedly compiled")
+
   test("compile request validates source and logical program name before JNI"):
     val empty = GeneratedCudaModule(
       cudaSource = "",
