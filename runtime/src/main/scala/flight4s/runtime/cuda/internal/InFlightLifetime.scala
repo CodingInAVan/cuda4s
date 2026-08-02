@@ -79,3 +79,37 @@ private[flight4s] final class InFlightBatch[E](
       }
       completed = true
       firstFailure.toLeft(())
+
+private[flight4s] final class InFlightTracker[E]:
+  private var pendingBatches = Vector.empty[InFlightBatch[E]]
+
+  def hasPending: Boolean =
+    pruneCompleted()
+    pendingBatches.nonEmpty
+
+  def add(batch: InFlightBatch[E]): Unit =
+    pruneCompleted()
+    pendingBatches :+= batch
+
+  def snapshot(): Vector[InFlightBatch[E]] =
+    pruneCompleted()
+    pendingBatches
+
+  def completePending(): Either[E, Unit] =
+    complete(snapshot())
+
+  def complete(
+      batches: Vector[InFlightBatch[E]]
+  ): Either[E, Unit] =
+    var firstFailure = Option.empty[E]
+    batches.foreach { batch =>
+      batch.complete() match
+        case Left(failure) if firstFailure.isEmpty =>
+          firstFailure = Some(failure)
+        case _ => ()
+    }
+    pruneCompleted()
+    firstFailure.toLeft(())
+
+  private def pruneCompleted(): Unit =
+    pendingBatches = pendingBatches.filterNot(_.isComplete)

@@ -60,6 +60,9 @@ class CudaResourcesJniSuite extends FunSuite:
       module.close()
       assert(!module.isOpen)
       assert(!function.isValid)
+      context.synchronize() match
+        case Right(()) => ()
+        case Left(failure) => fail(failure.message)
       loadedModule = None
     finally
       loadedModule.foreach { module =>

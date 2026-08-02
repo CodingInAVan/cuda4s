@@ -196,6 +196,16 @@ CudaDriverStatus CudaDriver::release_primary_context(
   return make_driver_status(cuDevicePrimaryCtxRelease(device));
 }
 
+CudaDriverStatus CudaDriver::synchronize_context(CUcontext context) const {
+  require_handle(context, "CUDA context");
+
+  CurrentContextScope current(context);
+  if (current.push_result() != CUDA_SUCCESS) {
+    return make_driver_status(current.push_result());
+  }
+  return finish_context_operation(cuCtxSynchronize(), current);
+}
+
 CudaModuleResult CudaDriver::load_ptx(
     CUcontext context,
     const std::vector<std::uint8_t>& ptx) const {

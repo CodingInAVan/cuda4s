@@ -76,6 +76,9 @@ class CudaDriver final {
   [[nodiscard]] CudaDriverStatus release_primary_context(
       std::int32_t device_ordinal) const;
 
+  [[nodiscard]] CudaDriverStatus synchronize_context(
+      CUcontext context) const;
+
   [[nodiscard]] CudaModuleResult load_ptx(
       CUcontext context,
       const std::vector<std::uint8_t>& ptx) const;

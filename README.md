@@ -59,7 +59,8 @@ provides:
 - typed `CudaFunction.launch` submission from the original
   `KernelInvocation[Args]`;
 - source-compatible default-stream launch and same-context explicit-stream
-  launch;
+  launch with automatic in-flight resource retention;
+- explicit context synchronization through `CudaContext.synchronize()`;
 - launch-time kernel provenance and dynamic shared-memory validation;
 - context-scoped `cuLaunchKernelEx` with structured CUDA Driver failures;
 - structured CUDA Driver failures with PTX JIT information and error logs;
@@ -70,8 +71,9 @@ provides:
   an optional `nvcc` compilation test.
 
 Typed launches can target CUDA's default stream or an owned explicit stream and
-remain asynchronous. `CudaStream.synchronize()` provides an explicit wait;
-launch never synchronizes implicitly. Device-buffer array copies remain
+remain asynchronous. `CudaContext.synchronize()` waits for all work in the
+context, while `CudaStream.synchronize()` waits for one explicit stream; launch
+never synchronizes implicitly. Device-buffer array copies remain
 whole-buffer and synchronous through temporary pageable direct staging.
 Reusable `CudaPinnedBuffer[T]` storage provides a page-locked synchronous path
 without repeated direct-buffer allocation. Its same-context device-buffer
@@ -80,13 +82,15 @@ transfers also expose explicit-stream asynchronous overloads backed by
 markers through `record`, `query`, and `synchronize`, while
 `CudaStream.waitFor` establishes GPU-side stream dependencies. Pinned/device
 copies accept independently validated source and destination element ranges.
-Explicit-stream copies and kernel launches automatically retain participating
-pinned buffers, device buffers, and modules until stream or recorded-event
-completion. Closing an in-flight resource makes it unavailable immediately and
-defers its native release. Pinned host reads and writes are rejected while a
-transfer is outstanding. Closing a stream with tracked work synchronizes before
-destroying it. Default-stream launches still require callers to preserve their
-resources through completion. Source-map artifacts retain known IR spans,
+Asynchronous copies and kernel launches automatically retain participating
+pinned buffers, device buffers, and modules until their completion boundary.
+Explicit-stream work completes through stream, event, or context completion;
+default-stream launches complete through context synchronization. Closing an
+in-flight resource makes it unavailable immediately and defers its native
+release. Pinned host reads and writes are rejected while a transfer is
+outstanding. Closing a stream with tracked work synchronizes before destroying
+it, and closing a context synchronizes pending default-stream launches before
+native teardown. Source-map artifacts retain known IR spans,
 while automatic Scala source-position capture and NVRTC diagnostic remapping
 remain later Scala 3 macro/compiler iterations.
 

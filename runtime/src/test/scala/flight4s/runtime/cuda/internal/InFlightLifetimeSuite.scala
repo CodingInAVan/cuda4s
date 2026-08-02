@@ -91,3 +91,28 @@ class InFlightLifetimeSuite extends FunSuite:
     assertEquals(first.requestClose(), Right(()))
     assert(first.isReleased)
     assertEquals(batch.complete(), Right(()))
+
+  test("tracker completes every pending batch and retains the first failure"):
+    var firstReleased = false
+    var secondReleased = false
+    val first = InFlightResourceState[String] { () =>
+      firstReleased = true
+      Left("first failed")
+    }
+    val second = InFlightResourceState[String] { () =>
+      secondReleased = true
+      Right(())
+    }
+    val tracker = InFlightTracker[String]()
+
+    tracker.add(InFlightBatch(Vector(first.acquire())))
+    tracker.add(InFlightBatch(Vector(second.acquire())))
+    assert(tracker.hasPending)
+    assertEquals(tracker.snapshot().size, 2)
+
+    assertEquals(first.requestClose(), Right(()))
+    assertEquals(second.requestClose(), Right(()))
+    assertEquals(tracker.completePending(), Left("first failed"))
+    assert(firstReleased)
+    assert(secondReleased)
+    assert(!tracker.hasPending)

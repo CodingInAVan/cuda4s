@@ -47,6 +47,10 @@ private[flight4s] trait CudaDriverBackend:
       deviceOrdinal: Int
   ): NativeCudaDriverStatus
 
+  def synchronizeContext(
+      contextHandle: Long
+  ): NativeCudaDriverStatus
+
   def loadPtx(
       contextHandle: Long,
       ptx: IArray[Byte]
@@ -189,6 +193,11 @@ private[flight4s] object NativeCudaDriver extends CudaDriverBackend:
       deviceOrdinal: Int
   ): NativeCudaDriverStatus =
     status(CudaNativeBindings.releasePrimaryContext(deviceOrdinal))
+
+  override def synchronizeContext(
+      contextHandle: Long
+  ): NativeCudaDriverStatus =
+    status(CudaNativeBindings.synchronizeContext(contextHandle))
 
   override def loadPtx(
       contextHandle: Long,

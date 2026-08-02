@@ -48,6 +48,9 @@ final class CudaNativeBindings {
   static native NativeCudaDriverResult releasePrimaryContext(
       int deviceOrdinal);
 
+  static native NativeCudaDriverResult synchronizeContext(
+      long contextHandle);
+
   static native NativeCudaDriverResult loadPtx(
       long contextHandle,
       byte[] ptx);
