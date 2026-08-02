@@ -42,6 +42,8 @@ final class CudaNativeBindings {
       byte[] programNameUtf8,
       byte[][] optionsUtf8);
 
+  static native NativeNvrtcVersionResult queryNvrtcVersion();
+
   static native NativeCudaContextResult retainPrimaryContext(
       int deviceOrdinal);
 

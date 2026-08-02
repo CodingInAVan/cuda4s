@@ -7,6 +7,23 @@ import flight4s.runtime.cuda.internal.NativeNvrtcCompiler
 object NvrtcCompiler:
   val DefaultProgramName: String = "flight4s_generated.cu"
 
+  def version(): Either[NvrtcVersionQueryFailure, NvrtcVersion] =
+    val nativeResult = NativeNvrtcCompiler.version()
+    if nativeResult.resultCode == 0 then
+      Right(
+        NvrtcVersion(
+          nativeResult.versionMajor,
+          nativeResult.versionMinor
+        )
+      )
+    else
+      Left(
+        NvrtcVersionQueryFailure(
+          nativeResult.resultCode,
+          nativeResult.resultName
+        )
+      )
+
   def compile(
       generated: GeneratedCudaModule,
       target: ComputeCapability,

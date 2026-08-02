@@ -11,7 +11,23 @@ private[flight4s] final case class NativeNvrtcCompilation(
     versionMinor: Int
 )
 
+private[flight4s] final case class NativeNvrtcVersionQuery(
+    resultName: String,
+    resultCode: Int,
+    versionMajor: Int,
+    versionMinor: Int
+)
+
 private[flight4s] object NativeNvrtcCompiler:
+  def version(): NativeNvrtcVersionQuery =
+    val nativeResult = CudaNativeBindings.queryNvrtcVersion()
+    NativeNvrtcVersionQuery(
+      resultName = decode(nativeResult.resultNameUtf8()),
+      resultCode = nativeResult.resultCode(),
+      versionMajor = nativeResult.versionMajor(),
+      versionMinor = nativeResult.versionMinor()
+    )
+
   def compile(
       cudaSource: String,
       programName: String,

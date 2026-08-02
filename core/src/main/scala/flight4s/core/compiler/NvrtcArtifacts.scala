@@ -35,6 +35,16 @@ final case class NvrtcVersion(
   override def toString: String =
     s"$major.$minor"
 
+final case class NvrtcVersionQueryFailure(
+    resultCode: Int,
+    resultName: String
+):
+  require(resultCode != 0, "an NVRTC version failure must have a nonzero code")
+  require(resultName.nonEmpty, "an NVRTC version failure must have a name")
+
+  def message: String =
+    s"NVRTC version query failed with $resultName ($resultCode)"
+
 final case class NvrtcCompileOptions private (
     values: Vector[String]
 )

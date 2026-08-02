@@ -115,8 +115,9 @@ void require_c_string(
   }
 }
 
+template <typename Result>
 void set_result(
-    NvrtcCompilation& result,
+    Result& result,
     nvrtcResult code) {
   result.result_code = static_cast<std::int32_t>(code);
   const char* name = nvrtcGetErrorString(code);
@@ -132,6 +133,26 @@ std::string without_trailing_null(std::vector<char> bytes) {
 }
 
 }  // namespace
+
+NvrtcVersionResult NvrtcCompiler::version() const {
+  NvrtcVersionResult result{
+      static_cast<std::int32_t>(NVRTC_SUCCESS),
+      nvrtcGetErrorString(NVRTC_SUCCESS),
+      0,
+      0,
+  };
+
+  int version_major = 0;
+  int version_minor = 0;
+  const auto version_result =
+      nvrtcVersion(&version_major, &version_minor);
+  set_result(result, version_result);
+  if (version_result == NVRTC_SUCCESS) {
+    result.version_major = version_major;
+    result.version_minor = version_minor;
+  }
+  return result;
+}
 
 NvrtcCompilation NvrtcCompiler::compile(
     const NvrtcCompileRequest& request) const {
@@ -150,16 +171,14 @@ NvrtcCompilation NvrtcCompiler::compile(
       0,
   };
 
-  int version_major = 0;
-  int version_minor = 0;
-  const auto version_result =
-      nvrtcVersion(&version_major, &version_minor);
-  if (version_result != NVRTC_SUCCESS) {
-    set_result(result, version_result);
+  const auto version_result = version();
+  if (!version_result.succeeded()) {
+    result.result_code = version_result.result_code;
+    result.result_name = version_result.result_name;
     return result;
   }
-  result.version_major = version_major;
-  result.version_minor = version_minor;
+  result.version_major = version_result.version_major;
+  result.version_minor = version_result.version_minor;
 
   nvrtcProgram program = nullptr;
   const auto create_result = nvrtcCreateProgram(
