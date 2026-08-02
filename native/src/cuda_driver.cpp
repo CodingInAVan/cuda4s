@@ -298,6 +298,71 @@ CudaFunctionResult CudaDriver::resolve_function(
   };
 }
 
+CudaFunctionAttributesResult CudaDriver::function_attributes(
+    CUcontext context,
+    CUfunction function) const {
+  require_handle(context, "CUDA context handle");
+  require_handle(function, "CUDA function handle");
+
+  CurrentContextScope current(context);
+  if (current.push_result() != CUDA_SUCCESS) {
+    return {
+        make_driver_status(current.push_result()),
+        {},
+    };
+  }
+
+  int max_threads_per_block = 0;
+  int static_shared_memory_bytes = 0;
+  int constant_memory_bytes = 0;
+  int local_memory_bytes = 0;
+  int registers_per_thread = 0;
+
+  auto query_result = cuFuncGetAttribute(
+      &max_threads_per_block,
+      CU_FUNC_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
+      function);
+  if (query_result == CUDA_SUCCESS) {
+    query_result = cuFuncGetAttribute(
+        &static_shared_memory_bytes,
+        CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES,
+        function);
+  }
+  if (query_result == CUDA_SUCCESS) {
+    query_result = cuFuncGetAttribute(
+        &constant_memory_bytes,
+        CU_FUNC_ATTRIBUTE_CONST_SIZE_BYTES,
+        function);
+  }
+  if (query_result == CUDA_SUCCESS) {
+    query_result = cuFuncGetAttribute(
+        &local_memory_bytes,
+        CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES,
+        function);
+  }
+  if (query_result == CUDA_SUCCESS) {
+    query_result = cuFuncGetAttribute(
+        &registers_per_thread,
+        CU_FUNC_ATTRIBUTE_NUM_REGS,
+        function);
+  }
+
+  auto status = finish_context_operation(query_result, current);
+  const bool succeeded = status.succeeded();
+  return {
+      std::move(status),
+      succeeded
+          ? CudaFunctionAttributes{
+                max_threads_per_block,
+                static_shared_memory_bytes,
+                constant_memory_bytes,
+                local_memory_bytes,
+                registers_per_thread,
+            }
+          : CudaFunctionAttributes{},
+  };
+}
+
 CudaStreamResult CudaDriver::create_stream(
     CUcontext context,
     std::uint32_t flags) const {

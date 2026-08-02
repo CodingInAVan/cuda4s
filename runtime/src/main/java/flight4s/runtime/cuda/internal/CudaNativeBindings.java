@@ -66,6 +66,10 @@ final class CudaNativeBindings {
       long moduleHandle,
       byte[] functionNameUtf8);
 
+  static native NativeCudaFunctionAttributesResult queryFunctionAttributes(
+      long contextHandle,
+      long functionHandle);
+
   static native NativeCudaDriverResult createStream(
       long contextHandle,
       int flags);

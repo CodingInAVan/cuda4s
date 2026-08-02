@@ -49,6 +49,11 @@ class CudaResourcesJniSuite extends FunSuite:
       assertEquals(function.name, "loadedKernel")
       assert(function.signature eq generated.kernel.signature)
       assert(function.nativeHandle != 0L)
+      assert(function.attributes.maxThreadsPerBlock > 0)
+      assert(function.attributes.staticSharedMemoryBytes >= 0)
+      assert(function.attributes.constantMemoryBytes >= 0)
+      assert(function.attributes.localMemoryBytes >= 0)
+      assert(function.attributes.registersPerThread >= 0)
 
       function.launch(
         generated.definition.bind(EmptyTuple),

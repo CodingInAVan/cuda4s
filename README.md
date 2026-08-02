@@ -55,7 +55,8 @@ provides:
   explicit streams;
 - reverse-creation-order cleanup across context-owned modules, buffers, and
   streams;
-- typed function resolution that preserves the generated kernel signature;
+- typed function resolution that preserves the generated kernel signature and
+  retains Driver-reported resource attributes;
 - typed `CudaFunction.launch` submission from the original
   `KernelInvocation[Args]`;
 - source-compatible default-stream launch and same-context explicit-stream

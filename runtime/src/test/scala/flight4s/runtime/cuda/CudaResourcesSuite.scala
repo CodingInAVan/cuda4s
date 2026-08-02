@@ -26,6 +26,7 @@ class CudaResourcesSuite extends FunSuite:
     assert(function.isValid)
     assertEquals(function.name, "ownedKernel")
     assert(function.signature eq fixture.kernel.signature)
+    assertEquals(function.attributes, defaultFunctionAttributes)
 
     context.close()
 
@@ -38,6 +39,7 @@ class CudaResourcesSuite extends FunSuite:
         "retain:0",
         "load:100",
         "resolve:100:200:ownedKernel",
+        "attributes:100:300",
         "unload:100:200",
         "release:0"
       )
@@ -99,6 +101,15 @@ class CudaResourcesSuite extends FunSuite:
 
     assert(functionFailure.operation.contains("failingKernel"))
     assertEquals(functionFailure.resultName, "CUDA_ERROR_NOT_FOUND")
+
+    backend.resolveStatus = successStatus
+    backend.functionAttributesStatus =
+      failureStatus("CUDA_ERROR_INVALID_HANDLE")
+    val attributesFailure =
+      module.function(fixture.kernel).swap.toOption.get
+
+    assert(attributesFailure.operation.contains("failingKernel"))
+    assertEquals(attributesFailure.resultName, "CUDA_ERROR_INVALID_HANDLE")
     context.close()
 
   test("closed resources reject new operations"):
@@ -1185,6 +1196,14 @@ class CudaResourcesSuite extends FunSuite:
       resultDescription = "no error"
     )
 
+  private val defaultFunctionAttributes = CudaFunctionAttributes(
+    maxThreadsPerBlock = 1024,
+    staticSharedMemoryBytes = 0,
+    constantMemoryBytes = 0,
+    localMemoryBytes = 0,
+    registersPerThread = 32
+  )
+
   private def failureStatus(
       name: String,
       errorLog: String = ""
@@ -1207,6 +1226,7 @@ class CudaResourcesSuite extends FunSuite:
     var loadStatus: NativeCudaDriverStatus = successStatus
     var unloadStatus: NativeCudaDriverStatus = successStatus
     var resolveStatus: NativeCudaDriverStatus = successStatus
+    var functionAttributesStatus: NativeCudaDriverStatus = successStatus
     var releaseStatus: NativeCudaDriverStatus = successStatus
     var synchronizeContextStatus: NativeCudaDriverStatus = successStatus
     var launchStatus: NativeCudaDriverStatus = successStatus
@@ -1287,6 +1307,21 @@ class CudaResourcesSuite extends FunSuite:
       NativeCudaResourceResult(
         handle = if resolveStatus.succeeded then 300L else 0L,
         status = resolveStatus
+      )
+
+    override def queryFunctionAttributes(
+        contextHandle: Long,
+        functionHandle: Long
+    ): NativeCudaFunctionAttributesQuery =
+      events += s"attributes:$contextHandle:$functionHandle"
+      NativeCudaFunctionAttributesQuery(
+        maxThreadsPerBlock = defaultFunctionAttributes.maxThreadsPerBlock,
+        staticSharedMemoryBytes =
+          defaultFunctionAttributes.staticSharedMemoryBytes,
+        constantMemoryBytes = defaultFunctionAttributes.constantMemoryBytes,
+        localMemoryBytes = defaultFunctionAttributes.localMemoryBytes,
+        registersPerThread = defaultFunctionAttributes.registersPerThread,
+        status = functionAttributesStatus
       )
 
     override def launchKernel(

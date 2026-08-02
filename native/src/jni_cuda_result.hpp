@@ -19,6 +19,9 @@ class CudaJniResultFactory final {
       const cuda::CudaDriverStatus& status,
       jlong handle = 0) const;
 
+  [[nodiscard]] jobject function_attributes_result(
+      const cuda::CudaFunctionAttributesResult& result) const;
+
   [[nodiscard]] jobject event_query_result(
       const cuda::CudaEventQueryResult& result) const;
 

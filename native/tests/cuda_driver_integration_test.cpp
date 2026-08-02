@@ -215,6 +215,21 @@ int main(int argument_count, char** arguments) {
           "successful function lookup returned null");
     }
 
+    const auto attributes_result = driver.function_attributes(
+        context,
+        function_result.function);
+    require_success(
+        attributes_result.status,
+        "query write_values attributes");
+    if (attributes_result.attributes.max_threads_per_block <= 0 ||
+        attributes_result.attributes.static_shared_memory_bytes < 0 ||
+        attributes_result.attributes.constant_memory_bytes < 0 ||
+        attributes_result.attributes.local_memory_bytes < 0 ||
+        attributes_result.attributes.registers_per_thread < 0) {
+      throw std::runtime_error(
+          "CUDA function attributes contained an invalid value");
+    }
+
     const auto missing_result = driver.resolve_function(
         context,
         module,
