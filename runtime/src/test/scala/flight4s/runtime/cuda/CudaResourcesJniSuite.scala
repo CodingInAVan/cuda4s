@@ -221,6 +221,91 @@ class CudaResourcesJniSuite extends FunSuite:
     finally
       if context.isOpen then context.close()
 
+  test("dynamic shared-memory block reduction matches the CPU sum"):
+    assume(
+      nativeLibraryConfigured,
+      "set flight4s.cuda.native.path to run JNI tests"
+    )
+
+    val elementCount = 256
+    val inputValues =
+      Array.tabulate(elementCount)(index => (index % 8).toFloat)
+    val expected = inputValues.sum
+    val inputParam = input[Float]("input")
+    val outputParam = output[Float]("output")
+    val definition = kernel(
+      "blockReduceSum",
+      params(inputParam, outputParam)
+    ) { bindings =>
+      val input = bindings.head
+      val output = bindings.tail.head
+      val scratch = dynamicSharedArray[Float]("scratch")
+
+      scratch(threadIdx.x) := input(threadIdx.x).read
+      barrier()
+      Vector(128, 64, 32, 16, 8, 4, 2, 1).foreach { stride =>
+        when(threadIdx.x < literal(stride)) {
+          scratch(threadIdx.x) :=
+            scratch(threadIdx.x).read +
+              scratch(threadIdx.x + literal(stride)).read
+        }
+        barrier()
+      }
+      when(threadIdx.x === literal(0)) {
+        output(literal(0)) := scratch(literal(0)).read
+      }
+    }
+    val generatedKernel = CudaCodegen.generate(definition) match
+      case Right(value) => value
+      case Left(error) => fail(error.message)
+    val generatedModule = GeneratedCudaModule(
+      cudaSource = generatedKernel.cudaSource,
+      sourceMap = generatedKernel.sourceMap,
+      compilerOptions = generatedKernel.compilerOptions,
+      kernels = Vector(generatedKernel)
+    )
+
+    val context = openContext()
+    try
+      val artifact = NvrtcCompiler.compile(
+        generatedModule,
+        context.computeCapability,
+        "block_reduce_sum.cu"
+      ) match
+        case Right(value) => value
+        case Left(failure) =>
+          fail(failure.message + "\n" + failure.compileLog)
+      val module = context.load(artifact) match
+        case Right(value) => value
+        case Left(failure) => fail(failure.message)
+      val function = module.function(generatedKernel) match
+        case Right(value) => value
+        case Left(failure) => fail(failure.message)
+      val inputBuffer = context.allocate[Float](elementCount).toOption.get
+      val outputBuffer = context.allocate[Float](1).toOption.get
+
+      assertEquals(inputBuffer.copyFrom(inputValues), Right(()))
+      function.launch(
+        definition.bind((inputBuffer, outputBuffer)),
+        LaunchConfig(
+          grid = Grid.x(1),
+          block = LaunchBlock.x(elementCount),
+          dynamicSharedMemoryBytes = elementCount * java.lang.Float.BYTES
+        )
+      ) match
+        case Right(()) => ()
+        case Left(failure) => fail(failure.message)
+
+      module.close()
+      inputBuffer.close()
+      assertEquals(context.synchronize(), Right(()))
+      val actual = outputBuffer.copyToArray() match
+        case Right(value) => value
+        case Left(failure) => fail(failure.message)
+      assertEquals(actual.toSeq, Seq(expected))
+    finally
+      if context.isOpen then context.close()
+
   test("partial pinned transfers preserve untouched elements on the GPU"):
     assume(
       nativeLibraryConfigured,

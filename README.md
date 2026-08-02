@@ -67,6 +67,8 @@ provides:
 - CUDA declaration emission for constants, global parameters, static and
   dynamic shared memory, and lexical local memory;
 - a generated, compiled, and executed typed `vectorAdd` integration test;
+- a generated, compiled, and executed dynamic shared-memory block reduction
+  with CPU-reference verification;
 - golden-source tests, native NVRTC contract tests, JNI integration tests, and
   an optional `nvcc` compilation test.
 
