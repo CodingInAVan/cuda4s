@@ -6,8 +6,8 @@ operations:
 - compile one CUDA C++ source artifact to PTX with NVRTC;
 - retain CUDA primary contexts, load PTX modules, resolve functions, and unload
   resources through the CUDA Driver API;
-- allocate and free device memory and perform synchronous whole-buffer and
-  partial-range host/device copies;
+- allocate and free device memory and perform synchronous or explicit-stream
+  asynchronous whole-buffer and partial-range host/device copies;
 - allocate page-locked host memory, expose an exact JNI direct-buffer view, and
   release the native allocation;
 - create, record, query, synchronize, wait on, and destroy CUDA events;
@@ -19,8 +19,9 @@ The launcher restores the caller's previous current context after submission
 and does not synchronize the CUDA context or stream. Scala runtime objects own
 retained primary contexts, loaded modules, device allocations, and explicit
 streams and events. They also own page-locked host allocations surfaced as
-internal direct buffers. Asynchronous copies and automatic in-flight lifetime
-tracking remain future runtime responsibilities.
+internal direct buffers. Asynchronous copy callers must keep participating
+resources alive until stream or event completion. Automatic in-flight lifetime
+tracking remains a future runtime responsibility.
 
 ## Requirements
 

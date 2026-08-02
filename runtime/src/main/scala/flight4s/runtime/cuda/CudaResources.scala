@@ -686,6 +686,60 @@ final class CudaDeviceBuffer[T] private[cuda] (
       )
     }
 
+  def copyFromAsync(
+      source: CudaPinnedBuffer[T],
+      stream: CudaStream
+  ): Either[CudaDriverFailure, Unit] =
+    requirePinnedBuffer(source)
+    requireMatchingPinnedBufferSize(source)
+    copyFromAsync(
+      source = source,
+      sourceOffset = 0,
+      destinationOffset = 0,
+      elementCount = elementCount,
+      stream = stream
+    )
+
+  def copyFromAsync(
+      source: CudaPinnedBuffer[T],
+      sourceOffset: Int,
+      destinationOffset: Int,
+      elementCount: Int,
+      stream: CudaStream
+  ): Either[CudaDriverFailure, Unit] =
+    requirePinnedBuffer(source)
+    requireStream(stream)
+    requireElementRange(
+      sourceOffset,
+      elementCount,
+      source.elementCount,
+      "pinned source"
+    )
+    requireElementRange(
+      destinationOffset,
+      elementCount,
+      this.elementCount,
+      "device destination"
+    )
+    val sourceOffsetBytes = byteExtent(sourceOffset)
+    val destinationOffsetBytes = byteExtent(destinationOffset)
+    val copySizeBytes = byteExtent(elementCount)
+    context.synchronizedLifecycle {
+      requireOpen()
+      source.requireOpen()
+      stream.requireOpen()
+      copyResult(
+        "CUDA asynchronous pinned host-to-device copy",
+        backend.copyHostToDeviceAsync(
+          context.nativeHandle,
+          handle,
+          destinationOffsetBytes,
+          source.transferView(sourceOffsetBytes, copySizeBytes),
+          stream.nativeHandle
+        )
+      )
+    }
+
   def copyToArray()(using
       codec: CudaHostCodec[T]
   ): Either[CudaDriverFailure, Array[T]] =
@@ -764,6 +818,63 @@ final class CudaDeviceBuffer[T] private[cuda] (
       )
     }
 
+  def copyToAsync(
+      destination: CudaPinnedBuffer[T],
+      stream: CudaStream
+  ): Either[CudaDriverFailure, Unit] =
+    requirePinnedBuffer(destination)
+    requireMatchingPinnedBufferSize(destination)
+    copyToAsync(
+      destination = destination,
+      sourceOffset = 0,
+      destinationOffset = 0,
+      elementCount = elementCount,
+      stream = stream
+    )
+
+  def copyToAsync(
+      destination: CudaPinnedBuffer[T],
+      sourceOffset: Int,
+      destinationOffset: Int,
+      elementCount: Int,
+      stream: CudaStream
+  ): Either[CudaDriverFailure, Unit] =
+    requirePinnedBuffer(destination)
+    requireStream(stream)
+    requireElementRange(
+      sourceOffset,
+      elementCount,
+      this.elementCount,
+      "device source"
+    )
+    requireElementRange(
+      destinationOffset,
+      elementCount,
+      destination.elementCount,
+      "pinned destination"
+    )
+    val sourceOffsetBytes = byteExtent(sourceOffset)
+    val destinationOffsetBytes = byteExtent(destinationOffset)
+    val copySizeBytes = byteExtent(elementCount)
+    context.synchronizedLifecycle {
+      requireOpen()
+      destination.requireOpen()
+      stream.requireOpen()
+      copyResult(
+        "CUDA asynchronous device-to-pinned-host copy",
+        backend.copyDeviceToHostAsync(
+          context.nativeHandle,
+          handle,
+          sourceOffsetBytes,
+          destination.transferView(
+            destinationOffsetBytes,
+            copySizeBytes
+          ),
+          stream.nativeHandle
+        )
+      )
+    }
+
   override def close(): Unit =
     context.synchronizedLifecycle {
       if !closed then
@@ -824,6 +935,12 @@ final class CudaDeviceBuffer[T] private[cuda] (
       buffer.elementCount == elementCount &&
         buffer.sizeBytes == sizeBytes,
       "CUDA pinned and device buffer sizes must match"
+    )
+
+  private def requireStream(stream: CudaStream): Unit =
+    require(
+      stream.context eq context,
+      "CUDA stream and buffers must belong to the same context"
     )
 
   private def requireElementRange(

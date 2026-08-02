@@ -51,6 +51,8 @@ provides:
   representations;
 - context-owned default-mode and non-blocking CUDA streams with explicit
   synchronization;
+- whole-buffer and partial-range asynchronous pinned-memory transfers on
+  explicit streams;
 - reverse-creation-order cleanup across context-owned modules, buffers, and
   streams;
 - typed function resolution that preserves the generated kernel signature;
@@ -72,14 +74,17 @@ remain asynchronous. `CudaStream.synchronize()` provides an explicit wait;
 launch never synchronizes implicitly. Device-buffer array copies remain
 whole-buffer and synchronous through temporary pageable direct staging.
 Reusable `CudaPinnedBuffer[T]` storage provides a page-locked synchronous path
-without repeated direct-buffer allocation. `CudaEvent` exposes completion
+without repeated direct-buffer allocation. Its same-context device-buffer
+transfers also expose explicit-stream asynchronous overloads backed by
+`cuMemcpyHtoDAsync` and `cuMemcpyDtoHAsync`. `CudaEvent` exposes completion
 markers through `record`, `query`, and `synchronize`, while
 `CudaStream.waitFor` establishes GPU-side stream dependencies. Pinned/device
 copies accept independently validated source and destination element ranges.
-Asynchronous copies and automatic in-flight resource lifetime tracking are the
-next runtime slices. Source-map artifacts retain known IR spans, while
-automatic Scala source-position capture and NVRTC diagnostic remapping remain
-later Scala 3 macro/compiler iterations.
+Until automatic in-flight resource retention is implemented, callers must
+synchronize before reading, mutating, or closing resources used by outstanding
+work. Source-map artifacts retain known IR spans, while automatic Scala
+source-position capture and NVRTC diagnostic remapping remain later Scala 3
+macro/compiler iterations.
 
 ## Build
 

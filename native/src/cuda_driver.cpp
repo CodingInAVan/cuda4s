@@ -543,6 +543,38 @@ CudaDriverStatus CudaDriver::copy_host_to_device(
       current);
 }
 
+CudaDriverStatus CudaDriver::copy_host_to_device_async(
+    CUcontext context,
+    CUdeviceptr destination,
+    std::uint64_t destination_offset_bytes,
+    const void* source,
+    std::uint64_t size_bytes,
+    CUstream stream) const {
+  require_handle(context, "CUDA context handle");
+  require_device_address(destination, "CUDA destination address");
+  require_handle(source, "host source address");
+  require_handle(stream, "CUDA stream handle");
+  const auto native_size =
+      checked_size(size_bytes, "CUDA copy size");
+  const auto destination_address = checked_device_range(
+      destination,
+      destination_offset_bytes,
+      size_bytes,
+      "CUDA destination offset");
+
+  CurrentContextScope current(context);
+  if (current.push_result() != CUDA_SUCCESS) {
+    return make_driver_status(current.push_result());
+  }
+  return finish_context_operation(
+      cuMemcpyHtoDAsync(
+          destination_address,
+          source,
+          native_size,
+          stream),
+      current);
+}
+
 CudaDriverStatus CudaDriver::copy_device_to_host(
     CUcontext context,
     void* destination,
@@ -566,6 +598,38 @@ CudaDriverStatus CudaDriver::copy_device_to_host(
   }
   return finish_context_operation(
       cuMemcpyDtoH(destination, source_address, native_size),
+      current);
+}
+
+CudaDriverStatus CudaDriver::copy_device_to_host_async(
+    CUcontext context,
+    void* destination,
+    CUdeviceptr source,
+    std::uint64_t source_offset_bytes,
+    std::uint64_t size_bytes,
+    CUstream stream) const {
+  require_handle(context, "CUDA context handle");
+  require_handle(destination, "host destination address");
+  require_device_address(source, "CUDA source address");
+  require_handle(stream, "CUDA stream handle");
+  const auto native_size =
+      checked_size(size_bytes, "CUDA copy size");
+  const auto source_address = checked_device_range(
+      source,
+      source_offset_bytes,
+      size_bytes,
+      "CUDA source offset");
+
+  CurrentContextScope current(context);
+  if (current.push_result() != CUDA_SUCCESS) {
+    return make_driver_status(current.push_result());
+  }
+  return finish_context_operation(
+      cuMemcpyDtoHAsync(
+          destination,
+          source_address,
+          native_size,
+          stream),
       current);
 }
 

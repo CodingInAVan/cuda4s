@@ -121,9 +121,23 @@ final class CudaNativeBindings {
       long deviceOffsetBytes,
       ByteBuffer source);
 
+  static native NativeCudaDriverResult copyHostToDeviceAsync(
+      long contextHandle,
+      long deviceAddress,
+      long deviceOffsetBytes,
+      ByteBuffer source,
+      long streamHandle);
+
   static native NativeCudaDriverResult copyDeviceToHost(
       long contextHandle,
       long deviceAddress,
       long deviceOffsetBytes,
       ByteBuffer destination);
+
+  static native NativeCudaDriverResult copyDeviceToHostAsync(
+      long contextHandle,
+      long deviceAddress,
+      long deviceOffsetBytes,
+      ByteBuffer destination,
+      long streamHandle);
 }

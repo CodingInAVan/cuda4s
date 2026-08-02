@@ -254,6 +254,43 @@ class CudaResourcesSuite extends FunSuite:
 
     context.close()
 
+  test("async pinned transfers submit partial ranges to an explicit stream"):
+    val backend = RecordingBackend()
+    val context = openedContext(backend)
+    val source = context.allocatePinned[Int](6).toOption.get
+    val destination = context.allocatePinned[Int](7).toOption.get
+    val device = context.allocate[Int](8).toOption.get
+    val stream = context.createStream().toOption.get
+
+    source.copyFrom(Array(10, 20, 30, 40, 50, 60))
+    destination.copyFrom(Array.fill(7)(-1))
+    assertEquals(device.copyFrom(Array.fill(8)(0)), Right(()))
+    assertEquals(
+      device.copyFromAsync(source, 1, 3, 3, stream),
+      Right(())
+    )
+    assertEquals(
+      device.copyToAsync(destination, 2, 1, 4, stream),
+      Right(())
+    )
+    assertEquals(
+      destination.toArray.toSeq,
+      Seq(-1, 0, 20, 30, 40, -1, -1)
+    )
+    assertEquals(
+      backend.events.filter(_.contains("Async:")).toVector,
+      Vector(
+        "copyHtoDAsync:100:1000:12:12:400",
+        "copyDtoHAsync:100:1000:8:16:400"
+      )
+    )
+
+    stream.close()
+    intercept[IllegalStateException](
+      device.copyFromAsync(source, 0, 0, 1, stream)
+    )
+    context.close()
+
   test("device buffers reject pinned buffers from another context"):
     val backend = RecordingBackend()
     val deviceContext = openedContext(backend)
@@ -266,6 +303,26 @@ class CudaResourcesSuite extends FunSuite:
 
     deviceContext.close()
     pinnedContext.close()
+
+  test("async pinned transfers reject streams from another context"):
+    val backend = RecordingBackend()
+    val bufferContext = openedContext(backend)
+    val streamContext = openedContext(backend)
+    val source = bufferContext.allocatePinned[Int](2).toOption.get
+    val destination = bufferContext.allocatePinned[Int](2).toOption.get
+    val device = bufferContext.allocate[Int](2).toOption.get
+    val stream = streamContext.createStream().toOption.get
+
+    intercept[IllegalArgumentException](
+      device.copyFromAsync(source, stream)
+    )
+    intercept[IllegalArgumentException](
+      device.copyToAsync(destination, stream)
+    )
+    assert(!backend.events.exists(_.contains("Async:")))
+
+    bufferContext.close()
+    streamContext.close()
 
   test("explicit streams synchronize and close deterministically"):
     val backend = RecordingBackend()
@@ -1076,6 +1133,28 @@ class CudaResourcesSuite extends FunSuite:
         )
       hostToDeviceStatus
 
+    override def copyHostToDeviceAsync(
+        contextHandle: Long,
+        deviceAddress: Long,
+        deviceOffsetBytes: Long,
+        source: ByteBuffer,
+        streamHandle: Long
+    ): NativeCudaDriverStatus =
+      events +=
+        s"copyHtoDAsync:$contextHandle:$deviceAddress:" +
+          s"$deviceOffsetBytes:${source.remaining()}:$streamHandle"
+      if hostToDeviceStatus.succeeded then
+        val input = new Array[Byte](source.remaining())
+        source.duplicate().get(input)
+        Array.copy(
+          input,
+          0,
+          memory(deviceAddress),
+          Math.toIntExact(deviceOffsetBytes),
+          input.length
+        )
+      hostToDeviceStatus
+
     override def copyDeviceToHost(
         contextHandle: Long,
         deviceAddress: Long,
@@ -1085,6 +1164,24 @@ class CudaResourcesSuite extends FunSuite:
       events +=
         s"copyDtoH:$contextHandle:$deviceAddress:" +
           s"$deviceOffsetBytes:${destination.remaining()}"
+      if deviceToHostStatus.succeeded then
+        destination.duplicate().put(
+          memory(deviceAddress),
+          Math.toIntExact(deviceOffsetBytes),
+          destination.remaining()
+        )
+      deviceToHostStatus
+
+    override def copyDeviceToHostAsync(
+        contextHandle: Long,
+        deviceAddress: Long,
+        deviceOffsetBytes: Long,
+        destination: ByteBuffer,
+        streamHandle: Long
+    ): NativeCudaDriverStatus =
+      events +=
+        s"copyDtoHAsync:$contextHandle:$deviceAddress:" +
+          s"$deviceOffsetBytes:${destination.remaining()}:$streamHandle"
       if deviceToHostStatus.succeeded then
         destination.duplicate().put(
           memory(deviceAddress),

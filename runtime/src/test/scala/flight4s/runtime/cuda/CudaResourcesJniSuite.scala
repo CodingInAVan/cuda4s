@@ -171,8 +171,8 @@ class CudaResourcesJniSuite extends FunSuite:
 
       leftHost.copyFrom(leftValues)
       rightHost.copyFrom(rightValues)
-      assertEquals(leftBuffer.copyFrom(leftHost), Right(()))
-      assertEquals(rightBuffer.copyFrom(rightHost), Right(()))
+      assertEquals(leftBuffer.copyFromAsync(leftHost, stream), Right(()))
+      assertEquals(rightBuffer.copyFromAsync(rightHost, stream), Right(()))
 
       val invocation = definition.bind(
         (leftBuffer, rightBuffer, outputBuffer, elementCount)
@@ -188,23 +188,19 @@ class CudaResourcesJniSuite extends FunSuite:
         case Right(()) => ()
         case Left(failure) => fail(failure.message)
 
+      outputBuffer.copyToAsync(outputHost, stream) match
+        case Right(()) => ()
+        case Left(failure) => fail(failure.message)
       completed.record(stream) match
         case Right(()) => ()
         case Left(failure) => fail(failure.message)
       completed.query() match
         case Right(_) => ()
         case Left(failure) => fail(failure.message)
-      stream.waitFor(completed) match
-        case Right(()) => ()
-        case Left(failure) => fail(failure.message)
       completed.synchronize() match
         case Right(()) => ()
         case Left(failure) => fail(failure.message)
       assertEquals(completed.query(), Right(true))
-
-      outputBuffer.copyTo(outputHost) match
-        case Right(()) => ()
-        case Left(failure) => fail(failure.message)
       val actual = outputHost.toArray
       assertEquals(actual.toSeq, expected.toSeq)
     finally
@@ -221,18 +217,20 @@ class CudaResourcesJniSuite extends FunSuite:
       val source = context.allocatePinned[Int](6).toOption.get
       val destination = context.allocatePinned[Int](7).toOption.get
       val device = context.allocate[Int](8).toOption.get
+      val stream = context.createStream().toOption.get
 
       source.copyFrom(Array(10, 20, 30, 40, 50, 60))
       destination.copyFrom(Array.fill(7)(-1))
       assertEquals(device.copyFrom(Array.fill(8)(0)), Right(()))
       assertEquals(
-        device.copyFrom(source, 1, 3, 3),
+        device.copyFromAsync(source, 1, 3, 3, stream),
         Right(())
       )
       assertEquals(
-        device.copyTo(destination, 2, 1, 4),
+        device.copyToAsync(destination, 2, 1, 4, stream),
         Right(())
       )
+      assertEquals(stream.synchronize(), Right(()))
       assertEquals(
         destination.toArray.toSeq,
         Seq(-1, 0, 20, 30, 40, -1, -1)
