@@ -13,11 +13,17 @@ class NvrtcCompilerSuite extends FunSuite:
   private val nativeLibraryConfigured =
     sys.props.contains("flight4s.cuda.native.path")
 
-  test("generated CUDA compiles to an inspectable PTX artifact"):
+  test("NVRTC version query matches generated CUDA compilation"):
     assume(
       nativeLibraryConfigured,
       "set flight4s.cuda.native.path to run JNI tests"
     )
+
+    val queriedVersion = NvrtcCompiler.version() match
+      case Right(value) => value
+      case Left(failure) => fail(failure.message)
+    assert(queriedVersion.major >= 12)
+    assert(queriedVersion.minor >= 0)
 
     val inputBuffer = input[Float]("input")
     val outputBuffer = output[Float]("output")
@@ -53,7 +59,7 @@ class NvrtcCompilerSuite extends FunSuite:
 
         assert(artifact.ptx.nonEmpty)
         assert(ptxText.contains(".entry copyValues"))
-        assert(artifact.nvrtcVersion.major >= 12)
+        assertEquals(artifact.nvrtcVersion, queriedVersion)
         assertEquals(artifact.target, ComputeCapability(8, 0))
         assertEquals(artifact.programName, "copy_values.cu")
         assertEquals(

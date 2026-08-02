@@ -55,6 +55,23 @@ class NvrtcArtifactsSuite extends FunSuite:
     intercept[IllegalArgumentException](NvrtcVersion(-1, 0))
     intercept[IllegalArgumentException](NvrtcVersion(12, -1))
 
+  test("NVRTC version query failures retain structured result metadata"):
+    val failure = NvrtcVersionQueryFailure(
+      resultCode = 7,
+      resultName = "NVRTC_ERROR_INTERNAL_ERROR"
+    )
+
+    assertEquals(
+      failure.message,
+      "NVRTC version query failed with NVRTC_ERROR_INTERNAL_ERROR (7)"
+    )
+    intercept[IllegalArgumentException](
+      NvrtcVersionQueryFailure(0, "NVRTC_SUCCESS")
+    )
+    intercept[IllegalArgumentException](
+      NvrtcVersionQueryFailure(7, "")
+    )
+
   test("NVRTC diagnostics map generated lines to the closest source span"):
     val declarationSpan = SourceSpan("Kernel.scala", 10, 3, 10, 24)
     val expressionSpan = SourceSpan("Kernel.scala", 18, 7, 18, 32)

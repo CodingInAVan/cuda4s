@@ -21,6 +21,21 @@ int main() {
   using flight4s::cuda::NvrtcCompileRequest;
   const flight4s::cuda::NvrtcCompiler compiler;
 
+  const auto version = compiler.version();
+  expect(version.succeeded(), "NVRTC version query should succeed");
+  expect(
+      version.result_code == 0,
+      "NVRTC version query success code should be zero");
+  expect(
+      version.result_name == "NVRTC_SUCCESS",
+      "NVRTC version query success name should be retained");
+  expect(
+      version.version_major >= 12,
+      "the configured toolkit should report NVRTC 12 or newer");
+  expect(
+      version.version_minor >= 0,
+      "NVRTC version query minor version should not be negative");
+
   const auto valid = compiler.compile(
       NvrtcCompileRequest{
           R"(
@@ -52,6 +67,10 @@ extern "C" __global__ void add_one(float* values) {
   expect(
       valid.version_minor >= 0,
       "NVRTC minor version should not be negative");
+  expect(
+      valid.version_major == version.version_major &&
+          valid.version_minor == version.version_minor,
+      "standalone and compilation NVRTC versions should match");
 
   const auto invalid = compiler.compile(
       NvrtcCompileRequest{

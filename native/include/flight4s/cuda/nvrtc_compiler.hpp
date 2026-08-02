@@ -12,6 +12,17 @@ struct NvrtcCompileRequest {
   std::vector<std::string> options;
 };
 
+struct NvrtcVersionResult {
+  std::int32_t result_code;
+  std::string result_name;
+  std::int32_t version_major;
+  std::int32_t version_minor;
+
+  [[nodiscard]] bool succeeded() const noexcept {
+    return result_code == 0;
+  }
+};
+
 struct NvrtcCompilation {
   std::int32_t result_code;
   std::string result_name;
@@ -27,6 +38,8 @@ struct NvrtcCompilation {
 
 class NvrtcCompiler final {
  public:
+  [[nodiscard]] NvrtcVersionResult version() const;
+
   [[nodiscard]] NvrtcCompilation compile(
       const NvrtcCompileRequest& request) const;
 };

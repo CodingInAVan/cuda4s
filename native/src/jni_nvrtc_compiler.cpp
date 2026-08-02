@@ -19,6 +19,10 @@ class NvrtcJniAdapter final {
   explicit NvrtcJniAdapter(JNIEnv* environment) noexcept
       : environment_(environment) {}
 
+  [[nodiscard]] jobject version() {
+    return to_java_version_result(compiler_.version());
+  }
+
   [[nodiscard]] jobject compile(
       jbyteArray source_utf8,
       jbyteArray program_name_utf8,
@@ -179,11 +183,61 @@ class NvrtcJniAdapter final {
     return java_result;
   }
 
+  [[nodiscard]] jobject to_java_version_result(
+      const flight4s::cuda::NvrtcVersionResult& result) const {
+    auto result_name = to_byte_array(result.result_name);
+    if (result_name == nullptr || has_exception()) {
+      return nullptr;
+    }
+
+    jclass result_class = environment_->FindClass(
+        "flight4s/runtime/cuda/internal/NativeNvrtcVersionResult");
+    if (result_class == nullptr) {
+      environment_->DeleteLocalRef(result_name);
+      return nullptr;
+    }
+    const jmethodID constructor = environment_->GetMethodID(
+        result_class,
+        "<init>",
+        "([BIII)V");
+    if (constructor == nullptr) {
+      environment_->DeleteLocalRef(result_class);
+      environment_->DeleteLocalRef(result_name);
+      return nullptr;
+    }
+
+    jobject java_result = environment_->NewObject(
+        result_class,
+        constructor,
+        result_name,
+        static_cast<jint>(result.result_code),
+        static_cast<jint>(result.version_major),
+        static_cast<jint>(result.version_minor));
+    environment_->DeleteLocalRef(result_class);
+    environment_->DeleteLocalRef(result_name);
+    return java_result;
+  }
+
   JNIEnv* environment_;
   flight4s::cuda::NvrtcCompiler compiler_;
 };
 
 }  // namespace
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_flight4s_runtime_cuda_internal_CudaNativeBindings_queryNvrtcVersion(
+    JNIEnv* environment,
+    jclass) {
+  const flight4s::jni::JniEnvironment jni(environment);
+  try {
+    return NvrtcJniAdapter(environment).version();
+  } catch (const std::bad_alloc& error) {
+    jni.throw_out_of_memory(error.what());
+  } catch (const std::exception& error) {
+    jni.throw_runtime_exception(error.what());
+  }
+  return nullptr;
+}
 
 extern "C" JNIEXPORT jobject JNICALL
 Java_flight4s_runtime_cuda_internal_CudaNativeBindings_compileCuda(
