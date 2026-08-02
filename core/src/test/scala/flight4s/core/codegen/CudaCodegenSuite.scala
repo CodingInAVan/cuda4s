@@ -130,6 +130,91 @@ class CudaCodegenSuite extends FunSuite:
       )
     )
 
+  test("dynamic shared-memory tree reduction emits staged barriers"):
+    val inputBuffer = input[Float]("input")
+    val outputBuffer = output[Float]("output")
+    val definition = kernel(
+      "blockReduceSum",
+      params(inputBuffer, outputBuffer)
+    ) { bindings =>
+      val input = bindings.head
+      val output = bindings.tail.head
+      val scratch = dynamicSharedArray[Float]("scratch")
+
+      scratch(threadIdx.x) := input(threadIdx.x).read
+      barrier()
+      Vector(128, 64, 32, 16, 8, 4, 2, 1).foreach { stride =>
+        when(threadIdx.x < literal(stride)) {
+          scratch(threadIdx.x) :=
+            scratch(threadIdx.x).read +
+              scratch(threadIdx.x + literal(stride)).read
+        }
+        barrier()
+      }
+      when(threadIdx.x === literal(0)) {
+        output(literal(0)) := scratch(literal(0)).read
+      }
+    }
+
+    val generated = generatedKernel(definition)
+
+    assertEquals(
+      generated.cudaSource,
+      """extern "C" __global__ void blockReduceSum(const float* input, float* output) {
+        |  extern __shared__ __align__(4) float scratch[];
+        |
+        |  scratch[threadIdx.x] = input[threadIdx.x];
+        |  __syncthreads();
+        |  if ((threadIdx.x < 128)) {
+        |    scratch[threadIdx.x] = (scratch[threadIdx.x] + scratch[(threadIdx.x + 128)]);
+        |  }
+        |  __syncthreads();
+        |  if ((threadIdx.x < 64)) {
+        |    scratch[threadIdx.x] = (scratch[threadIdx.x] + scratch[(threadIdx.x + 64)]);
+        |  }
+        |  __syncthreads();
+        |  if ((threadIdx.x < 32)) {
+        |    scratch[threadIdx.x] = (scratch[threadIdx.x] + scratch[(threadIdx.x + 32)]);
+        |  }
+        |  __syncthreads();
+        |  if ((threadIdx.x < 16)) {
+        |    scratch[threadIdx.x] = (scratch[threadIdx.x] + scratch[(threadIdx.x + 16)]);
+        |  }
+        |  __syncthreads();
+        |  if ((threadIdx.x < 8)) {
+        |    scratch[threadIdx.x] = (scratch[threadIdx.x] + scratch[(threadIdx.x + 8)]);
+        |  }
+        |  __syncthreads();
+        |  if ((threadIdx.x < 4)) {
+        |    scratch[threadIdx.x] = (scratch[threadIdx.x] + scratch[(threadIdx.x + 4)]);
+        |  }
+        |  __syncthreads();
+        |  if ((threadIdx.x < 2)) {
+        |    scratch[threadIdx.x] = (scratch[threadIdx.x] + scratch[(threadIdx.x + 2)]);
+        |  }
+        |  __syncthreads();
+        |  if ((threadIdx.x < 1)) {
+        |    scratch[threadIdx.x] = (scratch[threadIdx.x] + scratch[(threadIdx.x + 1)]);
+        |  }
+        |  __syncthreads();
+        |  if ((threadIdx.x == 0)) {
+        |    output[0] = scratch[0];
+        |  }
+        |}
+        |""".stripMargin.replace("\r\n", "\n")
+    )
+    assertEquals(
+      generated.launchRequirements,
+      KernelLaunchRequirements(
+        Some(
+          DynamicSharedMemoryRequirement(
+            elementSizeBytes = 4,
+            elementAlignmentBytes = 4
+          )
+        )
+      )
+    )
+
   test("low-precision expressions emit required headers and CUDA conversions"):
     val halfInput = input[Float16]("halfInput")
     val bfloatInput = input[BFloat16]("bfloatInput")
