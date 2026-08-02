@@ -194,6 +194,18 @@ class CudaResourcesJniSuite extends FunSuite:
       completed.record(stream) match
         case Right(()) => ()
         case Left(failure) => fail(failure.message)
+      leftHost.close()
+      rightHost.close()
+      leftBuffer.close()
+      rightBuffer.close()
+      outputBuffer.close()
+      module.close()
+      assert(!leftHost.isOpen)
+      assert(!rightHost.isOpen)
+      assert(!leftBuffer.isOpen)
+      assert(!rightBuffer.isOpen)
+      assert(!outputBuffer.isOpen)
+      assert(!module.isOpen)
       completed.query() match
         case Right(_) => ()
         case Left(failure) => fail(failure.message)
@@ -214,14 +226,16 @@ class CudaResourcesJniSuite extends FunSuite:
 
     val context = openContext()
     try
+      val initial = context.allocatePinned[Int](8).toOption.get
       val source = context.allocatePinned[Int](6).toOption.get
       val destination = context.allocatePinned[Int](7).toOption.get
       val device = context.allocate[Int](8).toOption.get
       val stream = context.createStream().toOption.get
 
+      initial.copyFrom(Array.fill(8)(0))
       source.copyFrom(Array(10, 20, 30, 40, 50, 60))
       destination.copyFrom(Array.fill(7)(-1))
-      assertEquals(device.copyFrom(Array.fill(8)(0)), Right(()))
+      assertEquals(device.copyFromAsync(initial, stream), Right(()))
       assertEquals(
         device.copyFromAsync(source, 1, 3, 3, stream),
         Right(())
@@ -230,6 +244,12 @@ class CudaResourcesJniSuite extends FunSuite:
         device.copyToAsync(destination, 2, 1, 4, stream),
         Right(())
       )
+      initial.close()
+      source.close()
+      device.close()
+      assert(!initial.isOpen)
+      assert(!source.isOpen)
+      assert(!device.isOpen)
       assertEquals(stream.synchronize(), Right(()))
       assertEquals(
         destination.toArray.toSeq,
