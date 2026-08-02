@@ -96,11 +96,15 @@ native teardown. NVRTC diagnostics retain generated CUDA locations and map them
 to the closest known Scala `SourceSpan` while preserving the original compiler
 log. Scala 3 call-site capture now populates spans for DSL declarations,
 stores, accumulation, structured control flow, reductions, and barriers.
-Fine-grained expression/operator spans remain a later increment.
+Fine-grained expression/operator spans remain a later increment. Deterministic
+NVRTC compilation identity now uses a versioned canonical encoding and SHA-256
+over generated CUDA, resolved options, target, compiler/codegen versions,
+program name, and kernel ABI/launch metadata. Cache storage and lookup are not
+yet implemented.
 
 ## Build
 
-Flight4s requires a JDK and sbt:
+Flight4s requires JDK 17 or newer and sbt:
 
 ```shell
 sbt test
