@@ -56,6 +56,13 @@ sealed trait NvrtcCompilation:
   def compilerOptions: NvrtcCompileOptions
   def programName: String
 
+  final def diagnostics: Vector[NvrtcDiagnostic] =
+    NvrtcDiagnostics.parse(
+      compileLog,
+      generated.sourceMap,
+      programName
+    )
+
 final case class NvrtcArtifact(
     generated: GeneratedCudaModule,
     ptx: IArray[Byte],

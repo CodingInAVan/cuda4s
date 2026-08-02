@@ -7,6 +7,7 @@ import munit.FunSuite
 import flight4s.core.codegen.*
 import flight4s.core.compiler.*
 import flight4s.core.dsl.CudaDsl.*
+import flight4s.core.ir.SourceSpan
 
 class NvrtcCompilerSuite extends FunSuite:
   private val nativeLibraryConfigured =
@@ -46,7 +47,7 @@ class NvrtcCompilerSuite extends FunSuite:
     ) match
       case Right(artifact) =>
         val ptxText = String(
-          artifact.ptx.toArray,
+          IArray.genericWrapArray(artifact.ptx).toArray,
           StandardCharsets.UTF_8
         )
 
@@ -72,12 +73,21 @@ class NvrtcCompilerSuite extends FunSuite:
       "set flight4s.cuda.native.path to run JNI tests"
     )
 
+    val brokenSpan = SourceSpan(
+      file = "BrokenKernel.scala",
+      startLine = 12,
+      startColumn = 5,
+      endLine = 12,
+      endColumn = 41
+    )
     val generated = GeneratedCudaModule(
       cudaSource =
         """extern "C" __global__ void broken( {
           |}
           |""".stripMargin.replace("\r\n", "\n"),
-      sourceMap = SourceMap(Vector.empty),
+      sourceMap = SourceMap(
+        Vector(SourceMapEntry(1, brokenSpan))
+      ),
       compilerOptions = CompilerOptions(),
       kernels = Vector.empty
     )
@@ -95,6 +105,20 @@ class NvrtcCompilerSuite extends FunSuite:
         assert(failure.resultCode != 0)
         assert(failure.compileLog.nonEmpty)
         assert(failure.compileLog.contains("broken_kernel.cu"))
+        val diagnostic = failure.diagnostics
+          .find(_.severity == NvrtcDiagnosticSeverity.Error)
+          .getOrElse(fail("NVRTC error diagnostic was not parsed"))
+        assertEquals(
+          diagnostic.generatedLocation.file,
+          "broken_kernel.cu"
+        )
+        assertEquals(diagnostic.generatedLocation.line, 1)
+        assertEquals(diagnostic.sourceSpan, Some(brokenSpan))
+        assert(
+          diagnostic.render.contains(
+            "Scala source: BrokenKernel.scala:12:5"
+          )
+        )
         assertEquals(failure.generated, generated)
         assertEquals(
           failure.compilerOptions.values,

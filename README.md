@@ -92,9 +92,10 @@ in-flight resource makes it unavailable immediately and defers its native
 release. Pinned host reads and writes are rejected while a transfer is
 outstanding. Closing a stream with tracked work synchronizes before destroying
 it, and closing a context synchronizes pending default-stream launches before
-native teardown. Source-map artifacts retain known IR spans,
-while automatic Scala source-position capture and NVRTC diagnostic remapping
-remain later Scala 3 macro/compiler iterations.
+native teardown. NVRTC diagnostics retain generated CUDA locations and map them
+to the closest known Scala `SourceSpan` while preserving the original compiler
+log. Automatic Scala source-position capture remains a later Scala 3 macro
+iteration.
 
 ## Build
 
