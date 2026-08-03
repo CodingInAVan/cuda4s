@@ -102,6 +102,44 @@ class NvrtcArtifactStoreSuite extends FunSuite:
         case other => fail(s"expected an invalid-entry failure, found $other")
     }
 
+  test("rejects metadata that does not derive the requested compilation key"):
+    withStore { store =>
+      val module = generated("MismatchedKey.scala")
+      val key = NvrtcCompilationKey.derive(
+        module,
+        ComputeCapability(9, 0),
+        version,
+        programName
+      )
+
+      store.store(key, artifact(module)) match
+        case Left(error: NvrtcArtifactStoreInvalidEntry) =>
+          assert(error.reason.contains("derives key"))
+        case other => fail(s"expected an invalid-entry failure, found $other")
+    }
+
+  test("rejects a persisted target and option set that no longer derives its key"):
+    withStore { store =>
+      val module = generated("TamperedManifest.scala")
+      val key = compilationKey(module)
+      assertEquals(store.store(key, artifact(module)), Right(()))
+      val manifest = store.entryPath(key).resolve("manifest")
+      Files.writeString(
+        manifest,
+        Files.readString(manifest)
+          .replace("target.major=8", "target.major=9")
+          .replace(
+            "option.2=LS1ncHUtYXJjaGl0ZWN0dXJlPWNvbXB1dGVfODA",
+            "option.2=LS1ncHUtYXJjaGl0ZWN0dXJlPWNvbXB1dGVfOTA"
+          )
+      )
+
+      store.load(key, module) match
+        case Left(error: NvrtcArtifactStoreInvalidEntry) =>
+          assert(error.reason.contains("derives key"))
+        case other => fail(s"expected an invalid-entry failure, found $other")
+    }
+
   test("rejects an entry when its CUDA source does not match the caller"):
     withStore { store =>
       val original = generated("Original.scala")
@@ -137,6 +175,24 @@ class NvrtcArtifactStoreSuite extends FunSuite:
           assertEquals(temporaryEntries, Vector.empty)
         finally entries.close()
       finally executor.shutdownNow()
+    }
+
+  test("remove and clear invalidate completed entries without deleting the store root"):
+    withStore { store =>
+      val first = generated("First.scala")
+      val second = first.copy(cudaSource = first.cudaSource + "// second\n")
+      val firstKey = compilationKey(first)
+      val secondKey = compilationKey(second)
+      assertEquals(store.store(firstKey, artifact(first)), Right(()))
+      assertEquals(store.store(secondKey, artifact(second)), Right(()))
+
+      assertEquals(store.remove(firstKey), Right(()))
+      assertEquals(store.load(firstKey, first), Right(None))
+      assert(load(store, secondKey, second).ptx.nonEmpty)
+
+      assertEquals(store.clear(), Right(()))
+      assertEquals(store.load(secondKey, second), Right(None))
+      assert(Files.isDirectory(store.directory))
     }
 
   private def load(

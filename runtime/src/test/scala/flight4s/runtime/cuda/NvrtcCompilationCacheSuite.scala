@@ -1,6 +1,9 @@
 package flight4s.runtime.cuda
 
+import java.io.IOException
 import java.nio.charset.StandardCharsets
+import java.nio.file.attribute.BasicFileAttributes
+import java.nio.file.{FileVisitResult, Files, Path, SimpleFileVisitor}
 import java.util.concurrent.{CountDownLatch, Executors, TimeUnit}
 
 import munit.FunSuite
@@ -157,6 +160,89 @@ class NvrtcCompilationCacheSuite extends FunSuite:
     assertEquals(backend.compileCount, 0)
     assertEquals(cache.entryCount, 0)
 
+  test("persistent cache reloads disk after a memory clear and clears each layer explicitly"):
+    withStore { store =>
+      val backend = RecordingBackend()
+      val cache = NvrtcCompilationCache.persistent(2, backend, store)
+      val initial = generated("PersistentInitial.scala")
+      val remapped = initial.copy(sourceMap = sourceMap("PersistentRemapped.scala"))
+
+      compiled(cache, initial)
+      cache.clear()
+      val fromDisk = compiled(cache, remapped)
+
+      assertEquals(backend.compileCount, 1)
+      assertEquals(fromDisk.generated, remapped)
+      assertEquals(cache.entryCount, 1)
+
+      assertEquals(cache.clearPersistent(), Right(()))
+      assertEquals(cache.entryCount, 1)
+      cache.clear()
+      compiled(cache, remapped)
+
+      assertEquals(backend.compileCount, 2)
+    }
+
+  test("persistent cache removes a corrupt entry, recompiles, and repairs the store"):
+    withStore { store =>
+      val backend = RecordingBackend()
+      val cache = NvrtcCompilationCache.persistent(2, backend, store)
+      val module = generated("PersistentRepair.scala")
+      val key = NvrtcCompilationKey.derive(module, target, version, programName)
+
+      compiled(cache, module)
+      cache.clear()
+      Files.writeString(store.entryPath(key).resolve("artifact.ptx"), "corrupted")
+
+      compiled(cache, module)
+      assertEquals(backend.compileCount, 2)
+
+      cache.clear()
+      compiled(cache, module)
+      assertEquals(backend.compileCount, 2)
+    }
+
+  test("persistent cache falls back to NVRTC when artifact-store I/O fails"):
+    val rootFile = Files.createTempFile("flight4s-nvrtc-cache-", ".tmp")
+    try
+      val backend = RecordingBackend()
+      val cache = NvrtcCompilationCache.persistent(
+        2,
+        backend,
+        NvrtcArtifactStore(rootFile)
+      )
+
+      compiled(cache, generated("StoreFailure.scala"))
+
+      assertEquals(backend.compileCount, 1)
+      assertEquals(cache.entryCount, 1)
+    finally Files.deleteIfExists(rootFile)
+
+  test("persistent cache still compiles one matching request at a time"):
+    withStore { store =>
+      val backend = RecordingBackend()
+      val started = CountDownLatch(1)
+      val release = CountDownLatch(1)
+      backend.pauseCompile(started, release)
+      val cache = NvrtcCompilationCache.persistent(2, backend, store)
+      val module = generated("PersistentConcurrent.scala")
+      val executor = Executors.newFixedThreadPool(2)
+
+      try
+        val first = executor.submit(() => cache.compile(module, target, programName))
+        assert(started.await(1, TimeUnit.SECONDS), "first compilation did not start")
+        val second = executor.submit(() => cache.compile(module, target, programName))
+        awaitCondition(backend.versionCount == 2)
+
+        release.countDown()
+        assert(first.get(1, TimeUnit.SECONDS).isRight)
+        assert(second.get(1, TimeUnit.SECONDS).isRight)
+        assertEquals(backend.compileCount, 1)
+      finally
+        release.countDown()
+        executor.shutdownNow()
+    }
+
   private def compiled(
       cache: NvrtcCompilationCache,
       generated: GeneratedCudaModule,
@@ -235,6 +321,32 @@ class NvrtcCompilationCacheSuite extends FunSuite:
     val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1)
     while !condition && System.nanoTime() < deadline do Thread.sleep(5)
     assert(condition, "condition did not become true before the timeout")
+
+  private def withStore(test: NvrtcArtifactStore => Unit): Unit =
+    val root = Files.createTempDirectory("flight4s-nvrtc-compilation-cache-")
+    try test(NvrtcArtifactStore(root))
+    finally deleteRecursively(root)
+
+  private def deleteRecursively(path: Path): Unit =
+    if Files.exists(path) then
+      Files.walkFileTree(
+        path,
+        new SimpleFileVisitor[Path]:
+          override def visitFile(
+              file: Path,
+              attributes: BasicFileAttributes
+          ): FileVisitResult =
+            Files.delete(file)
+            FileVisitResult.CONTINUE
+
+          override def postVisitDirectory(
+              directory: Path,
+              exception: IOException
+          ): FileVisitResult =
+            if exception != null then throw exception
+            Files.delete(directory)
+            FileVisitResult.CONTINUE
+      )
 
   private final class RecordingBackend(
       private var versionResponse: Either[NvrtcVersionQueryFailure, NvrtcVersion] =

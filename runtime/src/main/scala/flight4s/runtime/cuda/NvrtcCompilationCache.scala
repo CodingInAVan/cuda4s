@@ -14,7 +14,8 @@ import flight4s.core.compiler.*
  */
 final class NvrtcCompilationCache private[cuda] (
     val maximumEntries: Int,
-    private val backend: NvrtcCompilerBackend
+    private val backend: NvrtcCompilerBackend,
+    private val artifactStore: Option[NvrtcArtifactStore] = None
 ):
   require(maximumEntries > 0, "cache maximumEntries must be positive")
 
@@ -34,6 +35,16 @@ final class NvrtcCompilationCache private[cuda] (
   /** Removes completed entries without cancelling an NVRTC compilation in progress. */
   def clear(): Unit =
     cacheLock.synchronized(completed.clear())
+
+  /**
+   * Removes completed persistent entries without changing the in-memory cache.
+   *
+   * A cache without an artifact store treats this as a no-op.
+   */
+  def clearPersistent(): Either[NvrtcArtifactStoreError, Unit] =
+    artifactStore.fold[Either[NvrtcArtifactStoreError, Unit]](Right(()))(
+      _.clear()
+    )
 
   def compile(
       generated: GeneratedCudaModule,
@@ -82,16 +93,23 @@ final class NvrtcCompilationCache private[cuda] (
           future.complete(artifact)
           artifact.rebind(generated)
         case None =>
-          backend.compile(generated, target, programName) match
-            case Right(artifact) =>
-              val cached = CachedArtifact.from(artifact)
-              store(key, cached)
-              future.complete(cached)
-              cached.rebind(generated)
-            case Left(failure) =>
-              val cached = CachedFailure.from(failure)
-              future.complete(cached)
-              cached.rebind(generated)
+          persistentArtifact(key, generated) match
+            case Some(artifact) =>
+              store(key, artifact)
+              future.complete(artifact)
+              artifact.rebind(generated)
+            case None =>
+              backend.compile(generated, target, programName) match
+                case Right(artifact) =>
+                  val cached = CachedArtifact.from(artifact)
+                  store(key, cached)
+                  persist(key, artifact)
+                  future.complete(cached)
+                  cached.rebind(generated)
+                case Left(failure) =>
+                  val cached = CachedFailure.from(failure)
+                  future.complete(cached)
+                  cached.rebind(generated)
     catch
       case exception: Throwable =>
         future.completeExceptionally(exception)
@@ -115,6 +133,26 @@ final class NvrtcCompilationCache private[cuda] (
         iterator.remove()
     }
 
+  private def persistentArtifact(
+      key: NvrtcCompilationKey,
+      generated: GeneratedCudaModule
+  ): Option[CachedArtifact] =
+    artifactStore.flatMap { store =>
+      store.load(key, generated) match
+        case Right(Some(artifact)) => Some(CachedArtifact.from(artifact))
+        case Right(None) => None
+        case Left(_: NvrtcArtifactStoreIoFailure) => None
+        case Left(_) =>
+          store.remove(key)
+          None
+    }
+
+  private def persist(
+      key: NvrtcCompilationKey,
+      artifact: NvrtcArtifact
+  ): Unit =
+    artifactStore.foreach(_.store(key, artifact))
+
   private def await(
       future: CompletableFuture[CachedCompilation]
   ): CachedCompilation =
@@ -137,11 +175,28 @@ private[cuda] object NvrtcCompilationCache:
   def apply(maximumEntries: Int): NvrtcCompilationCache =
     NvrtcCompilationCache(maximumEntries, NativeNvrtcCompilerBackend)
 
+  def persistent(
+      maximumEntries: Int,
+      artifactStore: NvrtcArtifactStore
+  ): NvrtcCompilationCache =
+    new NvrtcCompilationCache(
+      maximumEntries,
+      NativeNvrtcCompilerBackend,
+      Some(artifactStore)
+    )
+
   private[cuda] def apply(
       maximumEntries: Int,
       backend: NvrtcCompilerBackend
   ): NvrtcCompilationCache =
     new NvrtcCompilationCache(maximumEntries, backend)
+
+  private[cuda] def persistent(
+      maximumEntries: Int,
+      backend: NvrtcCompilerBackend,
+      artifactStore: NvrtcArtifactStore
+  ): NvrtcCompilationCache =
+    new NvrtcCompilationCache(maximumEntries, backend, Some(artifactStore))
 
 private sealed trait CachedCompilation:
   def rebind(

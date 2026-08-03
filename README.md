@@ -109,6 +109,11 @@ key before lookup. `NvrtcArtifactStore` provides a separate versioned,
 checksum-verified, atomically published disk representation for successful
 artifacts; it retains generated CUDA C++, PTX, compiler logs, and compilation
 metadata while rebinding diagnostics to the caller's current Scala source map.
+`NvrtcCompilationCache.persistent(maximumEntries, store)` composes the bounded
+memory LRU with that store as memory, disk, then NVRTC. Persistent store I/O
+failures remain cache misses, while invalid entries are removed and repaired by
+a successful recompilation. `clear()` clears only memory; `clearPersistent()`
+explicitly clears the disk layer.
 
 ## Build
 
