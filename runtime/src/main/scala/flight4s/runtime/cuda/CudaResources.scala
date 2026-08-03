@@ -26,6 +26,34 @@ final class CudaDriverException(
     val failure: CudaDriverFailure
 ) extends RuntimeException(failure.message)
 
+final case class CudaFunctionAttributes(
+    maxThreadsPerBlock: Int,
+    staticSharedMemoryBytes: Int,
+    constantMemoryBytes: Int,
+    localMemoryBytes: Int,
+    registersPerThread: Int
+):
+  require(
+    maxThreadsPerBlock > 0,
+    s"CUDA function maximum threads per block must be positive: $maxThreadsPerBlock"
+  )
+  require(
+    staticSharedMemoryBytes >= 0,
+    s"CUDA function static shared memory must not be negative: $staticSharedMemoryBytes"
+  )
+  require(
+    constantMemoryBytes >= 0,
+    s"CUDA function constant memory must not be negative: $constantMemoryBytes"
+  )
+  require(
+    localMemoryBytes >= 0,
+    s"CUDA function local memory must not be negative: $localMemoryBytes"
+  )
+  require(
+    registersPerThread >= 0,
+    s"CUDA function registers per thread must not be negative: $registersPerThread"
+  )
+
 sealed trait CudaLaunchFailure:
   def message: String
 
@@ -1219,19 +1247,45 @@ final class CudaModule private[cuda] (
         owns(generated),
         s"kernel ${generated.name} does not belong to this CUDA module artifact"
       )
-      val result =
+      val functionResult =
         backend.resolveFunction(context.nativeHandle, handle, generated.name)
-      if result.status.succeeded then
+      if functionResult.status.succeeded then
         require(
-          result.handle != 0L,
+          functionResult.handle != 0L,
           "successful CUDA function lookup returned a null handle"
         )
-        Right(new CudaFunction(this, generated, result.handle))
+        val attributesResult = backend.queryFunctionAttributes(
+          context.nativeHandle,
+          functionResult.handle
+        )
+        if attributesResult.status.succeeded then
+          Right(
+            new CudaFunction(
+              this,
+              generated,
+              functionResult.handle,
+              CudaFunctionAttributes(
+                maxThreadsPerBlock = attributesResult.maxThreadsPerBlock,
+                staticSharedMemoryBytes =
+                  attributesResult.staticSharedMemoryBytes,
+                constantMemoryBytes = attributesResult.constantMemoryBytes,
+                localMemoryBytes = attributesResult.localMemoryBytes,
+                registersPerThread = attributesResult.registersPerThread
+              )
+            )
+          )
+        else
+          Left(
+            CudaDriverFailure.fromStatus(
+              s"CUDA function attribute query for ${generated.name}",
+              attributesResult.status
+            )
+          )
       else
         Left(
           CudaDriverFailure.fromStatus(
             s"CUDA function lookup for ${generated.name}",
-            result.status
+            functionResult.status
           )
         )
     }
@@ -1278,7 +1332,8 @@ final class CudaModule private[cuda] (
 final class CudaFunction[Args <: Tuple] private[cuda] (
     val module: CudaModule,
     val generated: GeneratedKernel[Args],
-    private val handle: Long
+    private val handle: Long,
+    val attributes: CudaFunctionAttributes
 ):
   def name: String = generated.name
   def signature: KernelSignature[Args] = generated.signature

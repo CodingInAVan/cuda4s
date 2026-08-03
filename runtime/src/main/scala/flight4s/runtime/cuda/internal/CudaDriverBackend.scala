@@ -27,6 +27,15 @@ private[flight4s] final case class NativeCudaResourceResult(
     status: NativeCudaDriverStatus
 )
 
+private[flight4s] final case class NativeCudaFunctionAttributesQuery(
+    maxThreadsPerBlock: Int,
+    staticSharedMemoryBytes: Int,
+    constantMemoryBytes: Int,
+    localMemoryBytes: Int,
+    registersPerThread: Int,
+    status: NativeCudaDriverStatus
+)
+
 private[flight4s] final case class NativeCudaPinnedAllocationResult(
     handle: Long,
     storage: ByteBuffer,
@@ -66,6 +75,11 @@ private[flight4s] trait CudaDriverBackend:
       moduleHandle: Long,
       functionName: String
   ): NativeCudaResourceResult
+
+  def queryFunctionAttributes(
+      contextHandle: Long,
+      functionHandle: Long
+  ): NativeCudaFunctionAttributesQuery
 
   def launchKernel(
       contextHandle: Long,
@@ -229,6 +243,23 @@ private[flight4s] object NativeCudaDriver extends CudaDriverBackend:
         moduleHandle,
         functionName.getBytes(StandardCharsets.UTF_8)
       )
+    )
+
+  override def queryFunctionAttributes(
+      contextHandle: Long,
+      functionHandle: Long
+  ): NativeCudaFunctionAttributesQuery =
+    val result = CudaNativeBindings.queryFunctionAttributes(
+      contextHandle,
+      functionHandle
+    )
+    NativeCudaFunctionAttributesQuery(
+      maxThreadsPerBlock = result.maxThreadsPerBlock(),
+      staticSharedMemoryBytes = result.staticSharedMemoryBytes(),
+      constantMemoryBytes = result.constantMemoryBytes(),
+      localMemoryBytes = result.localMemoryBytes(),
+      registersPerThread = result.registersPerThread(),
+      status = status(result)
     )
 
   override def launchKernel(
@@ -458,6 +489,17 @@ private[flight4s] object NativeCudaDriver extends CudaDriverBackend:
 
   private def status(
       result: NativeCudaPinnedMemoryResult
+  ): NativeCudaDriverStatus =
+    NativeCudaDriverStatus(
+      resultCode = result.resultCode(),
+      resultName = decode(result.resultNameUtf8()),
+      resultDescription = decode(result.resultDescriptionUtf8()),
+      infoLog = decode(result.infoLogUtf8()),
+      errorLog = decode(result.errorLogUtf8())
+    )
+
+  private def status(
+      result: NativeCudaFunctionAttributesResult
   ): NativeCudaDriverStatus =
     NativeCudaDriverStatus(
       resultCode = result.resultCode(),

@@ -43,6 +43,19 @@ struct CudaFunctionResult {
   CUfunction function;
 };
 
+struct CudaFunctionAttributes {
+  std::int32_t max_threads_per_block;
+  std::int32_t static_shared_memory_bytes;
+  std::int32_t constant_memory_bytes;
+  std::int32_t local_memory_bytes;
+  std::int32_t registers_per_thread;
+};
+
+struct CudaFunctionAttributesResult {
+  CudaDriverStatus status;
+  CudaFunctionAttributes attributes;
+};
+
 struct CudaDeviceMemoryResult {
   CudaDriverStatus status;
   CUdeviceptr address;
@@ -91,6 +104,10 @@ class CudaDriver final {
       CUcontext context,
       CUmodule module,
       const std::string& name) const;
+
+  [[nodiscard]] CudaFunctionAttributesResult function_attributes(
+      CUcontext context,
+      CUfunction function) const;
 
   [[nodiscard]] CudaStreamResult create_stream(
       CUcontext context,

@@ -106,6 +106,15 @@ class CudaDriverJniAdapter final {
         to_java_handle(result.function));
   }
 
+  [[nodiscard]] jobject query_function_attributes(
+      jlong context_handle,
+      jlong function_handle) const {
+    const auto result = driver_.function_attributes(
+        from_java_handle<CUcontext>(context_handle),
+        from_java_handle<CUfunction>(function_handle));
+    return results_.function_attributes_result(result);
+  }
+
   [[nodiscard]] jobject create_stream(
       jlong context_handle,
       jint flags) const {
@@ -525,6 +534,26 @@ Java_flight4s_runtime_cuda_internal_CudaNativeBindings_resolveFunction(
             context_handle,
             module_handle,
             function_name_utf8);
+  } catch (const std::invalid_argument& error) {
+    jni.throw_illegal_argument(error.what());
+  } catch (const std::bad_alloc& error) {
+    jni.throw_out_of_memory(error.what());
+  } catch (const std::exception& error) {
+    jni.throw_runtime_exception(error.what());
+  }
+  return nullptr;
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_flight4s_runtime_cuda_internal_CudaNativeBindings_queryFunctionAttributes(
+    JNIEnv* environment,
+    jclass,
+    jlong context_handle,
+    jlong function_handle) {
+  const flight4s::jni::JniEnvironment jni(environment);
+  try {
+    return CudaDriverJniAdapter(environment)
+        .query_function_attributes(context_handle, function_handle);
   } catch (const std::invalid_argument& error) {
     jni.throw_illegal_argument(error.what());
   } catch (const std::bad_alloc& error) {
