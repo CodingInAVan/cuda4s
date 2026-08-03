@@ -61,6 +61,17 @@ object NvrtcCompileOptions:
       generatedOptions.nvrtcOptions :+ target.nvrtcOption
     )
 
+  /** Rebuilds a previously resolved option sequence from a trusted artifact. */
+  private[flight4s] def fromResolvedValues(
+      values: Vector[String]
+  ): NvrtcCompileOptions =
+    require(values.nonEmpty, "resolved NVRTC options must not be empty")
+    require(
+      values.forall(option => option.nonEmpty && !option.contains('\u0000')),
+      "resolved NVRTC options must be non-empty and null-free"
+    )
+    new NvrtcCompileOptions(values)
+
 sealed trait NvrtcCompilation:
   def generated: GeneratedCudaModule
   def compileLog: String
