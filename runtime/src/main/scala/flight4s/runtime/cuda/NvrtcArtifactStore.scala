@@ -101,6 +101,122 @@ final class NvrtcArtifactStore private[cuda] (root: Path):
       artifact: NvrtcArtifact
   ): Either[NvrtcArtifactStoreError, Unit] =
     val entry = entryPath(key)
+    validateIdentity(
+      key,
+      entry,
+      artifact.generated,
+      artifact.nvrtcVersion,
+      artifact.target,
+      artifact.compilerOptions,
+      artifact.programName
+    ).flatMap(_ => writeArtifact(key, artifact, entry))
+
+  /** Removes the completed entry for `key`, if one exists. */
+  def remove(key: NvrtcCompilationKey): Either[NvrtcArtifactStoreError, Unit] =
+    val entry = entryPath(key)
+    try
+      deleteRecursively(entry)
+      Right(())
+    catch
+      case exception: IOException =>
+        Left(ioFailure("remove artifact", entry, exception))
+      case exception: SecurityException =>
+        Left(ioFailure("remove artifact", entry, exception))
+
+  /**
+   * Removes every completed entry while retaining the configured store root.
+   *
+   * This method does not coordinate with writers in other processes.
+   */
+  def clear(): Either[NvrtcArtifactStoreError, Unit] =
+    try
+      if Files.exists(directory) then
+        val entries = Files.list(directory)
+        try
+          val iterator = entries.iterator()
+          while iterator.hasNext do deleteRecursively(iterator.next())
+        finally entries.close()
+      Right(())
+    catch
+      case exception: IOException =>
+        Left(ioFailure("clear artifacts", directory, exception))
+      case exception: SecurityException =>
+        Left(ioFailure("clear artifacts", directory, exception))
+
+  private[cuda] def entryPath(key: NvrtcCompilationKey): Path =
+    val keyText = key.toString
+    directory.resolve(keyText.take(2)).resolve(keyText)
+
+  private def loadEntry(
+      key: NvrtcCompilationKey,
+      generated: GeneratedCudaModule,
+      entry: Path
+  ): Either[NvrtcArtifactStoreError, NvrtcArtifact] =
+    val manifestPath = entry.resolve(ManifestFileName)
+    for
+      manifestBytes <- readFile(key, manifestPath)
+      manifest <- parseManifest(key, manifestPath, manifestBytes)
+      source <- readVerifiedFile(
+        key,
+        entry.resolve(CudaSourceFileName),
+        manifest.cudaSourceSha256
+      )
+      _ <-
+        if MessageDigest.isEqual(
+            source,
+            generated.cudaSource.getBytes(StandardCharsets.UTF_8)
+          )
+        then Right(())
+        else Left(NvrtcArtifactStoreSourceMismatch(key, entry))
+      target = ComputeCapability(manifest.targetMajor, manifest.targetMinor)
+      version = NvrtcVersion(manifest.nvrtcMajor, manifest.nvrtcMinor)
+      compilerOptions = NvrtcCompileOptions.fromResolvedValues(
+        manifest.compilerOptions
+      )
+      _ <- validateIdentity(
+        key,
+        manifestPath,
+        generated,
+        version,
+        target,
+        compilerOptions,
+        manifest.programName
+      )
+      ptx <- readVerifiedFile(
+        key,
+        entry.resolve(PtxFileName),
+        manifest.ptxSha256
+      )
+      _ <-
+        if ptx.nonEmpty then Right(())
+        else
+          Left(
+            invalid(
+              key,
+              entry.resolve(PtxFileName),
+              "PTX payload must not be empty"
+            )
+          )
+      compileLog <- readVerifiedFile(
+        key,
+        entry.resolve(CompileLogFileName),
+        manifest.compileLogSha256
+      )
+    yield NvrtcArtifact(
+      generated = generated,
+      ptx = IArray.unsafeFromArray(ptx),
+      compileLog = String(compileLog, StandardCharsets.UTF_8),
+      nvrtcVersion = version,
+      target = target,
+      compilerOptions = compilerOptions,
+      programName = manifest.programName
+    )
+
+  private def writeArtifact(
+      key: NvrtcCompilationKey,
+      artifact: NvrtcArtifact,
+      entry: Path
+  ): Either[NvrtcArtifactStoreError, Unit] =
     val parent = entry.getParent
     var temporary: Option[Path] = None
 
@@ -128,63 +244,6 @@ final class NvrtcArtifactStore private[cuda] (root: Path):
     finally
       temporary.foreach(deleteRecursively)
 
-  private[cuda] def entryPath(key: NvrtcCompilationKey): Path =
-    val keyText = key.toString
-    directory.resolve(keyText.take(2)).resolve(keyText)
-
-  private def loadEntry(
-      key: NvrtcCompilationKey,
-      generated: GeneratedCudaModule,
-      entry: Path
-  ): Either[NvrtcArtifactStoreError, NvrtcArtifact] =
-    val manifestPath = entry.resolve(ManifestFileName)
-    for
-      manifestBytes <- readFile(key, manifestPath)
-      manifest <- parseManifest(key, manifestPath, manifestBytes)
-      source <- readVerifiedFile(
-        key,
-        entry.resolve(CudaSourceFileName),
-        manifest.cudaSourceSha256
-      )
-      _ <-
-        if MessageDigest.isEqual(
-            source,
-            generated.cudaSource.getBytes(StandardCharsets.UTF_8)
-          )
-        then Right(())
-        else Left(NvrtcArtifactStoreSourceMismatch(key, entry))
-      ptx <- readVerifiedFile(
-        key,
-        entry.resolve(PtxFileName),
-        manifest.ptxSha256
-      )
-      _ <-
-        if ptx.nonEmpty then Right(())
-        else
-          Left(
-            invalid(
-              key,
-              entry.resolve(PtxFileName),
-              "PTX payload must not be empty"
-            )
-          )
-      compileLog <- readVerifiedFile(
-        key,
-        entry.resolve(CompileLogFileName),
-        manifest.compileLogSha256
-      )
-    yield NvrtcArtifact(
-      generated = generated,
-      ptx = IArray.unsafeFromArray(ptx),
-      compileLog = String(compileLog, StandardCharsets.UTF_8),
-      nvrtcVersion = NvrtcVersion(manifest.nvrtcMajor, manifest.nvrtcMinor),
-      target = ComputeCapability(manifest.targetMajor, manifest.targetMinor),
-      compilerOptions = NvrtcCompileOptions.fromResolvedValues(
-        manifest.compilerOptions
-      ),
-      programName = manifest.programName
-    )
-
   private def readFile(
       key: NvrtcCompilationKey,
       path: Path
@@ -211,6 +270,44 @@ final class NvrtcArtifactStore private[cuda] (root: Path):
           )
         )
     }
+
+  private def validateIdentity(
+      key: NvrtcCompilationKey,
+      path: Path,
+      generated: GeneratedCudaModule,
+      version: NvrtcVersion,
+      target: ComputeCapability,
+      compilerOptions: NvrtcCompileOptions,
+      programName: String
+  ): Either[NvrtcArtifactStoreError, Unit] =
+    val expectedOptions = NvrtcCompileOptions.resolve(
+      generated.compilerOptions,
+      target
+    )
+    if compilerOptions != expectedOptions then
+      Left(
+        invalid(
+          key,
+          path,
+          "resolved compiler options do not match the generated module"
+        )
+      )
+    else
+      val derived = NvrtcCompilationKey.derive(
+        generated,
+        target,
+        version,
+        programName
+      )
+      if derived == key then Right(())
+      else
+        Left(
+          invalid(
+            key,
+            path,
+            s"artifact metadata derives key $derived"
+          )
+        )
 
   private def writeEntry(
       temporary: Path,
