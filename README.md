@@ -105,7 +105,10 @@ a caller-owned bounded in-memory LRU cache of successful PTX compilations;
 cache hits rebind the PTX metadata to the current generated Scala artifact.
 `NvrtcCompiler.version()` queries the loaded compiler version without creating
 or compiling a CUDA program, allowing that version to participate in a cache
-key before lookup.
+key before lookup. `NvrtcArtifactStore` provides a separate versioned,
+checksum-verified, atomically published disk representation for successful
+artifacts; it retains generated CUDA C++, PTX, compiler logs, and compilation
+metadata while rebinding diagnostics to the caller's current Scala source map.
 
 ## Build
 
