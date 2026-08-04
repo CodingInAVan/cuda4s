@@ -1,6 +1,8 @@
 package flight4s.runtime.cuda
 
 import java.nio.{ByteBuffer, ByteOrder}
+import java.security.MessageDigest
+import java.util.HexFormat
 import scala.util.control.NonFatal
 
 import flight4s.core.abi.{DeviceAddress, NativeLaunchRequest}
@@ -106,6 +108,17 @@ enum CudaEventMode(private[cuda] val nativeFlags: Int):
 private[cuda] trait CudaInFlightResource:
   private[cuda] def acquireInFlight(): InFlightLease[CudaDriverFailure]
 
+private final case class PtxModuleKey private (hex: String)
+
+private object PtxModuleKey:
+  def derive(ptx: IArray[Byte]): PtxModuleKey =
+    val bytes = IArray.genericWrapArray(ptx).toArray
+    PtxModuleKey(
+      HexFormat.of().formatHex(
+        MessageDigest.getInstance("SHA-256").digest(bytes)
+      )
+    )
+
 final class CudaContext private (
     val deviceOrdinal: Int,
     val computeCapability: ComputeCapability,
@@ -116,6 +129,7 @@ final class CudaContext private (
   private val defaultStreamTracker = InFlightTracker[CudaDriverFailure]()
   private var closed = false
   private var resources = Vector.empty[AutoCloseable]
+  private var nativeModules = Map.empty[PtxModuleKey, SharedCudaModule]
 
   def isOpen: Boolean =
     lifecycleLock.synchronized(!closed)
@@ -125,23 +139,48 @@ final class CudaContext private (
   ): Either[CudaDriverFailure, CudaModule] =
     lifecycleLock.synchronized {
       requireOpen()
-      val result = backend.loadPtx(handle, artifact.ptx)
-      if result.status.succeeded then
-        require(
-          result.handle != 0L,
-          "successful CUDA module load returned a null handle"
-        )
-        val module =
-          new CudaModule(this, artifact, result.handle, backend)
-        resources :+= module
-        Right(module)
-      else
-        Left(
-          CudaDriverFailure.fromStatus(
-            "CUDA PTX module load",
-            result.status
-          )
-        )
+      val key = PtxModuleKey.derive(artifact.ptx)
+      nativeModules.get(key) match
+        case Some(shared) => Right(newModule(artifact, shared))
+        case None =>
+          val result = backend.loadPtx(handle, artifact.ptx)
+          if result.status.succeeded then
+            require(
+              result.handle != 0L,
+              "successful CUDA module load returned a null handle"
+            )
+            val shared = new SharedCudaModule(
+              context = this,
+              key = key,
+              handle = result.handle,
+              backend = backend
+            )
+            nativeModules += key -> shared
+            Right(newModule(artifact, shared))
+          else
+            Left(
+              CudaDriverFailure.fromStatus(
+                "CUDA PTX module load",
+                result.status
+              )
+            )
+    }
+
+  private def newModule(
+      artifact: NvrtcArtifact,
+      shared: SharedCudaModule
+  ): CudaModule =
+    shared.retain()
+    val module = new CudaModule(this, artifact, shared, backend)
+    resources :+= module
+    module
+
+  private[cuda] def removeNativeModule(
+      key: PtxModuleKey,
+      shared: SharedCudaModule
+  ): Unit =
+    nativeModules.get(key).foreach { current =>
+      if current eq shared then nativeModules -= key
     }
 
   def allocate[T](
@@ -325,6 +364,10 @@ final class CudaContext private (
             case Left(failure) => throw CudaDriverException(failure)
             case Right(()) => ()
         resources.reverse.foreach(_.close())
+        require(
+          nativeModules.isEmpty,
+          "CUDA module cache retained a native module after wrapper cleanup"
+        )
         val status = backend.releasePrimaryContext(deviceOrdinal)
         if !status.succeeded then
           throw CudaDriverException(
@@ -1211,28 +1254,50 @@ final class CudaDeviceBuffer[T] private[cuda] (
     if status.succeeded then Right(())
     else Left(CudaDriverFailure.fromStatus(operation, status))
 
+private final class SharedCudaModule(
+    context: CudaContext,
+    key: PtxModuleKey,
+    val handle: Long,
+    backend: CudaDriverBackend
+):
+  private var wrapperCount = 0
+  private var unloaded = false
+
+  def retain(): Unit =
+    require(!unloaded, "cannot retain an unloaded CUDA module")
+    wrapperCount += 1
+
+  def release(): Either[CudaDriverFailure, Unit] =
+    require(wrapperCount > 0, "CUDA module wrapper count underflow")
+    if wrapperCount > 1 then
+      wrapperCount -= 1
+      Right(())
+    else
+      val status = backend.unloadModule(context.nativeHandle, handle)
+      if status.succeeded then
+        wrapperCount = 0
+        unloaded = true
+        context.removeNativeModule(key, this)
+        Right(())
+      else
+        Left(
+          CudaDriverFailure.fromStatus(
+            "CUDA module unload",
+            status
+          )
+        )
+
 final class CudaModule private[cuda] (
     val context: CudaContext,
     val artifact: NvrtcArtifact,
-    private val handle: Long,
+    private val shared: SharedCudaModule,
     private val backend: CudaDriverBackend
 ) extends AutoCloseable,
       CudaInFlightResource:
   private val lifetime = InFlightResourceState[CudaDriverFailure] { () =>
-    val status = backend.unloadModule(
-      context.nativeHandle,
-      handle
-    )
-    if status.succeeded then
+    shared.release().map { _ =>
       context.unregister(this)
-      Right(())
-    else
-      Left(
-        CudaDriverFailure.fromStatus(
-          "CUDA module unload",
-          status
-        )
-      )
+    }
   }
 
   def isOpen: Boolean =
@@ -1248,7 +1313,11 @@ final class CudaModule private[cuda] (
         s"kernel ${generated.name} does not belong to this CUDA module artifact"
       )
       val functionResult =
-        backend.resolveFunction(context.nativeHandle, handle, generated.name)
+        backend.resolveFunction(
+          context.nativeHandle,
+          shared.handle,
+          generated.name
+        )
       if functionResult.status.succeeded then
         require(
           functionResult.handle != 0L,

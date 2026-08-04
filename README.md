@@ -113,7 +113,11 @@ metadata while rebinding diagnostics to the caller's current Scala source map.
 memory LRU with that store as memory, disk, then NVRTC. Persistent store I/O
 failures remain cache misses, while invalid entries are removed and repaired by
 a successful recompilation. `clear()` clears only memory; `clearPersistent()`
-explicitly clears the disk layer.
+explicitly clears the disk layer. Within one `CudaContext`, `load` also
+deduplicates live native CUDA modules by the SHA-256 identity of their PTX.
+Each caller receives its own provenance-aware `CudaModule` wrapper, while the
+shared native module unloads only after the final wrapper and its in-flight work
+release. Idle modules are not retained after the final close.
 
 ## Build
 
