@@ -50,6 +50,48 @@ class CudaResourcesSuite extends FunSuite:
     assertEquals(backend.events.count(_ == "release:0"), 1)
     intercept[IllegalStateException](function.nativeHandle)
 
+  test("context reuses one native module while matching PTX wrappers remain open"):
+    val backend = RecordingBackend()
+    val fixture = generatedFixture("sharedKernel")
+    val context = openedContext(backend)
+    val first = context.load(fixture.artifact).toOption.get
+    val second = context.load(fixture.artifact).toOption.get
+
+    assertEquals(backend.events.count(_ == "load:100"), 1)
+
+    first.close()
+    assert(!first.isOpen)
+    assert(second.isOpen)
+    assert(!backend.events.exists(_.startsWith("unload:")))
+
+    assert(second.function(fixture.kernel).isRight)
+    second.close()
+
+    assertEquals(
+      backend.events.filter(_.startsWith("unload:")).toVector,
+      Vector("unload:100:200")
+    )
+    context.close()
+
+  test("shared native module unload waits for the final in-flight wrapper lease"):
+    val backend = RecordingBackend()
+    val fixture = generatedFixture("sharedInFlight")
+    val context = openedContext(backend)
+    val first = context.load(fixture.artifact).toOption.get
+    val second = context.load(fixture.artifact).toOption.get
+    val lease = first.acquireInFlight()
+
+    first.close()
+    second.close()
+    assert(!backend.events.exists(_.startsWith("unload:")))
+
+    assertEquals(lease.release(), Right(()))
+    assertEquals(
+      backend.events.filter(_.startsWith("unload:")).toVector,
+      Vector("unload:100:200")
+    )
+    context.close()
+
   test("module rejects kernels from a different generated artifact"):
     val backend = RecordingBackend()
     val context = openedContext(backend)
@@ -94,6 +136,7 @@ class CudaResourcesSuite extends FunSuite:
 
     backend.loadStatus = successStatus
     val module = context.load(fixture.artifact).toOption.get
+    assertEquals(backend.events.count(_ == "load:100"), 2)
     backend.resolveStatus = failureStatus("CUDA_ERROR_NOT_FOUND")
 
     val functionFailure =
@@ -1176,7 +1219,9 @@ class CudaResourcesSuite extends FunSuite:
     val artifact = NvrtcArtifact(
       generated = generatedModule,
       ptx = IArray.unsafeFromArray(
-        ".version 8.0".getBytes(StandardCharsets.UTF_8)
+        s".version 8.0\n// ${definition.name}\n".getBytes(
+          StandardCharsets.UTF_8
+        )
       ),
       compileLog = "",
       nvrtcVersion = NvrtcVersion(12, 0),
