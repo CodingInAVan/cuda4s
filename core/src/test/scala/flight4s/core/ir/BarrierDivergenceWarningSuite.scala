@@ -88,11 +88,40 @@ class BarrierDivergenceWarningSuite extends FunSuite:
       )
     )
 
-  test("unknown local conditions remain silent until lexical analysis is available"):
-    val definition = kernel("unknownBarrier", params()) { _ =>
+  test("grid-uniform local conditions do not warn"):
+    val definition = kernel("uniformLocalBarrier", params()) { _ =>
       val condition = local("condition", literal(true))
       when(condition.read) {
         barrier()
+      }
+    }
+
+    val result = KernelValidator.validate(definition)
+
+    assert(result.isValid)
+    assertEquals(result.warnings, Vector.empty)
+
+  test("varying local conditions warn"):
+    val definition = kernel("varyingLocalBarrier", params()) { _ =>
+      val lane = local("lane", threadIdx.x)
+      when(lane.read < literal(32)) {
+        barrier()
+      }
+    }
+
+    val result = KernelValidator.validate(definition)
+
+    assertEquals(
+      result.warnings.map(_.code),
+      Vector(ValidationWarningCode.BarrierMayDiverge)
+    )
+
+  test("block-uniform loop indexes can guard barriers"):
+    val definition = kernel("uniformLoopBarrier", params()) { _ =>
+      gpuFor("index", literal(0), blockIdx.x) { index =>
+        when(index < literal(1)) {
+          barrier()
+        }
       }
     }
 

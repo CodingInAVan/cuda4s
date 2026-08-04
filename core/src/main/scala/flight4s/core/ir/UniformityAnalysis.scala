@@ -16,6 +16,43 @@ private[core] enum Uniformity:
       Uniformity.BlockUniform
     case _ => Uniformity.GridUniform
 
+private[core] final case class UniformityScope(
+    locals: Map[String, Uniformity] = Map.empty,
+    loopIndexes: Map[String, Uniformity] = Map.empty,
+    reductionIndexes: Map[String, Uniformity] = Map.empty
+):
+  def withLocal(name: String, uniformity: Uniformity): UniformityScope =
+    copy(locals = locals.updated(name, uniformity))
+
+  def withLoopIndex(name: String, uniformity: Uniformity): UniformityScope =
+    copy(loopIndexes = loopIndexes.updated(name, uniformity))
+
+  def withReductionIndex(name: String, uniformity: Uniformity): UniformityScope =
+    copy(reductionIndexes = reductionIndexes.updated(name, uniformity))
+
+  def mergeVisible(others: UniformityScope*): UniformityScope =
+    copy(
+      locals = locals.map { case (name, uniformity) =>
+        name -> others.foldLeft(uniformity) { (merged, other) =>
+          merged.join(other.locals.getOrElse(name, uniformity))
+        }
+      }
+    )
+
+  def withControlDependence(
+      names: Set[String],
+      uniformity: Uniformity
+  ): UniformityScope =
+    copy(
+      locals = locals.map { case (name, current) =>
+        name ->
+          (if names.contains(name) then current.join(uniformity) else current)
+      }
+    )
+
+private[core] object UniformityScope:
+  val empty: UniformityScope = UniformityScope()
+
 private[core] object UniformityAnalysis:
   private val intrinsicUniformities: Map[String, Uniformity] = Map(
     "threadIdx.x" -> Uniformity.Varying,
@@ -29,28 +66,115 @@ private[core] object UniformityAnalysis:
     "blockDim.z" -> Uniformity.GridUniform
   )
 
-  def expression(expr: Expr[?]): Uniformity = expr match
+  def expression(expr: Expr[?]): Uniformity =
+    expression(expr, UniformityScope.empty)
+
+  def expression(expr: Expr[?], scope: UniformityScope): Uniformity = expr match
     case _: Literal[?] => Uniformity.GridUniform
     case binary: Binary[?] =>
-      expression(binary.left).join(expression(binary.right))
+      expression(binary.left, scope).join(expression(binary.right, scope))
     case comparison: Compare[?] =>
-      expression(comparison.left).join(expression(comparison.right))
+      expression(comparison.left, scope).join(expression(comparison.right, scope))
     case intrinsic: Intrinsic[?] =>
       intrinsicUniformities.getOrElse(intrinsic.name, Uniformity.Unknown)
-    case conversion: Convert[?, ?] => expression(conversion.value)
-    case accumulation: ToAccumulator[?, ?] => expression(accumulation.value)
-    case _: ReductionIndex => Uniformity.Unknown
-    case _: LoopIndex => Uniformity.Unknown
+    case conversion: Convert[?, ?] => expression(conversion.value, scope)
+    case accumulation: ToAccumulator[?, ?] => expression(accumulation.value, scope)
+    case index: ReductionIndex =>
+      scope.reductionIndexes.getOrElse(index.name, Uniformity.Unknown)
+    case index: LoopIndex =>
+      scope.loopIndexes.getOrElse(index.name, Uniformity.Unknown)
     case reduction: ReduceSum[?, ?] =>
-      expression(reduction.from)
-        .join(expression(reduction.until))
-        .join(expression(reduction.initial))
-        .join(expression(reduction.value))
-    case load: Load[?, ?, ?] => loadUniformity(load.from)
+      val indexUniformity =
+        expression(reduction.from, scope).join(expression(reduction.until, scope))
+      val reductionScope =
+        scope.withReductionIndex(reduction.index.name, indexUniformity)
+      indexUniformity
+        .join(expression(reduction.initial, scope))
+        .join(expression(reduction.value, reductionScope))
+    case load: Load[?, ?, ?] => loadUniformity(load.from, scope)
     case _: ScalarParam[?] => Uniformity.GridUniform
 
-  private def loadUniformity(place: Place[?, ?, ?]): Uniformity = place match
-    case constant: ConstantElement[?] => expression(constant.index)
-    case _: LocalVariable[?] => Uniformity.Unknown
+  def scopeAfter(statement: Stmt, scope: UniformityScope): UniformityScope =
+    statement match
+      case declaration: LocalDeclaration[?] =>
+        scope.withLocal(
+          declaration.local.name,
+          expression(declaration.initial, scope)
+        )
+
+      case store: Store[?, ?] =>
+        store.to match
+          case local: LocalVariable[?] =>
+            scope.withLocal(local.name, expression(store.value, scope))
+          case _ => scope
+
+      case accumulation: Accumulate[?] =>
+        val current =
+          scope.locals.getOrElse(accumulation.target.name, Uniformity.Unknown)
+        scope.withLocal(
+          accumulation.target.name,
+          current.join(expression(accumulation.value, scope))
+        )
+
+      case branch: IfThen =>
+        val thenScope = scopeAfter(branch.thenBlock, scope)
+        val elseScope = branch.elseBlock match
+          case Some(elseBlock) => scopeAfter(elseBlock, scope)
+          case None => scope
+        scope
+          .mergeVisible(thenScope, elseScope)
+          .withControlDependence(
+            modifiedLocalNames(branch.thenBlock) ++
+              branch.elseBlock.toVector.flatMap(modifiedLocalNames).toSet,
+            expression(branch.condition, scope)
+          )
+
+      case loop: ForLoop =>
+        val bodyScope = scopeAfter(loop.body, loopScope(loop, scope))
+        scope
+          .mergeVisible(bodyScope)
+          .withControlDependence(
+            modifiedLocalNames(loop.body),
+            loopUniformity(loop, scope)
+          )
+
+      case _: LocalArrayDeclaration[?] | _: Barrier => scope
+
+  def scopeAfter(block: Block, scope: UniformityScope): UniformityScope =
+    block.statements.foldLeft(scope) { (current, statement) =>
+      scopeAfter(statement, current)
+    }
+
+  def loopScope(loop: ForLoop, scope: UniformityScope): UniformityScope =
+    scope.withLoopIndex(loop.index.name, loopUniformity(loop, scope))
+
+  private def loadUniformity(
+      place: Place[?, ?, ?],
+      scope: UniformityScope
+  ): Uniformity = place match
+    case constant: ConstantElement[?] => expression(constant.index, scope)
+    case local: LocalVariable[?] =>
+      scope.locals.getOrElse(local.name, Uniformity.Unknown)
     case _: BufferElement[?, ?] | _: SharedElement[?] | _: LocalArrayElement[?] =>
       Uniformity.Varying
+
+  private def loopUniformity(
+      loop: ForLoop,
+      scope: UniformityScope
+  ): Uniformity =
+    expression(loop.from, scope).join(expression(loop.until, scope))
+
+  private def modifiedLocalNames(block: Block): Set[String] =
+    block.statements.flatMap(modifiedLocalNames).toSet
+
+  private def modifiedLocalNames(statement: Stmt): Set[String] = statement match
+    case store: Store[?, ?] =>
+      store.to match
+        case local: LocalVariable[?] => Set(local.name)
+        case _ => Set.empty
+    case accumulation: Accumulate[?] => Set(accumulation.target.name)
+    case branch: IfThen =>
+      modifiedLocalNames(branch.thenBlock) ++
+        branch.elseBlock.toVector.flatMap(modifiedLocalNames).toSet
+    case loop: ForLoop => modifiedLocalNames(loop.body)
+    case _: LocalDeclaration[?] | _: LocalArrayDeclaration[?] | _: Barrier => Set.empty
