@@ -18,7 +18,8 @@ provides:
 - typed expressions, places, statements, control flow, and reductions;
 - distinct module constants, rank-aware kernel shared arrays, and lexical local
   arrays;
-- module and kernel validation for memory ownership, scope, and access;
+- module and kernel validation for memory ownership, scope, access, and static
+  literal bounds on constant, local, and shared arrays;
 - typed kernel signatures and compile-time-checked launch argument tuples;
 - ordered CUDA ABI descriptors and exact scalar/device-pointer byte encoding;
 - aligned direct launch storage with stable descriptor codes and slot offsets;
@@ -73,47 +74,60 @@ provides:
 - golden-source tests, native NVRTC contract tests, JNI integration tests, and
   an optional `nvcc` compilation test.
 
-Typed launches can target CUDA's default stream or an owned explicit stream and
-remain asynchronous. `CudaContext.synchronize()` waits for all work in the
-context, while `CudaStream.synchronize()` waits for one explicit stream; launch
-never synchronizes implicitly. Device-buffer array copies remain
-whole-buffer and synchronous through temporary pageable direct staging.
-Reusable `CudaPinnedBuffer[T]` storage provides a page-locked synchronous path
-without repeated direct-buffer allocation. Its same-context device-buffer
-transfers also expose explicit-stream asynchronous overloads backed by
-`cuMemcpyHtoDAsync` and `cuMemcpyDtoHAsync`. `CudaEvent` exposes completion
-markers through `record`, `query`, and `synchronize`, while
-`CudaStream.waitFor` establishes GPU-side stream dependencies. Pinned/device
-copies accept independently validated source and destination element ranges.
-Asynchronous copies and kernel launches automatically retain participating
-pinned buffers, device buffers, and modules until their completion boundary.
-Explicit-stream work completes through stream, event, or context completion;
-default-stream launches complete through context synchronization. Closing an
-in-flight resource makes it unavailable immediately and defers its native
-release. Pinned host reads and writes are rejected while a transfer is
-outstanding. Closing a stream with tracked work synchronizes before destroying
-it, and closing a context synchronizes pending default-stream launches before
-native teardown. NVRTC diagnostics retain generated CUDA locations and map them
+### Execution and resource lifetimes
+
+- **Launches:** Typed launches are asynchronous on CUDA's default stream or an
+  owned explicit stream. `CudaContext.synchronize()` waits for all context
+  work, while `CudaStream.synchronize()` waits for one explicit stream; launch
+  never synchronizes implicitly.
+- **Copies:** Device-buffer copies are whole-buffer and synchronous through
+  temporary pageable direct staging. Reusable `CudaPinnedBuffer[T]` storage
+  provides a page-locked synchronous path without repeated direct-buffer
+  allocation; its same-context device-buffer transfers also support explicit-stream
+  `cuMemcpyHtoDAsync` and `cuMemcpyDtoHAsync` operations.
+- **Events and dependencies:** `CudaEvent.record`, `query`, and `synchronize`
+  provide completion markers, while `CudaStream.waitFor` establishes GPU-side
+  stream dependencies. Pinned/device source and destination ranges are
+  independently validated.
+- **In-flight work:** Asynchronous copies and launches retain participating
+  pinned buffers, device buffers, and modules through stream, event, or context
+  completion. Explicit-stream work completes through stream, event, or context
+  completion; default-stream launches complete through context synchronization.
+  Closing an in-flight resource makes it unavailable immediately and defers
+  native release.
+- **Teardown:** Pinned host reads and writes are rejected during transfers. A
+  stream synchronizes tracked work before destruction, and a context waits for
+  pending default-stream launches before native teardown.
+
+### Diagnostics and source locations
+
+NVRTC diagnostics retain generated CUDA locations and map them
 to the closest known Scala `SourceSpan` while preserving the original compiler
 log. Scala 3 call-site capture now populates spans for DSL declarations,
 stores, accumulation, structured control flow, reductions, and barriers.
-Fine-grained expression/operator spans remain a later increment. Deterministic
-NVRTC compilation identity now uses a versioned canonical encoding and SHA-256
-over generated CUDA, resolved options, target, compiler/codegen versions,
-program name, and kernel ABI/launch metadata. `NvrtcCompilationCache` provides
-a caller-owned bounded in-memory LRU cache of successful PTX compilations;
-cache hits rebind the PTX metadata to the current generated Scala artifact.
-`NvrtcCompiler.version()` queries the loaded compiler version without creating
-or compiling a CUDA program, allowing that version to participate in a cache
-key before lookup. `NvrtcArtifactStore` provides a separate versioned,
-checksum-verified, atomically published disk representation for successful
-artifacts; it retains generated CUDA C++, PTX, compiler logs, and compilation
-metadata while rebinding diagnostics to the caller's current Scala source map.
-`NvrtcCompilationCache.persistent(maximumEntries, store)` composes the bounded
-memory LRU with that store as memory, disk, then NVRTC. Persistent store I/O
-failures remain cache misses, while invalid entries are removed and repaired by
-a successful recompilation. `clear()` clears only memory; `clearPersistent()`
-explicitly clears the disk layer. Within one `CudaContext`, `load` also
+Fine-grained expression/operator spans remain a later increment.
+
+### Compilation artifacts and caches
+
+- **Identity:** A versioned canonical SHA-256 covers generated CUDA, resolved
+  options, target, compiler/codegen versions, program name, and kernel
+  ABI/launch metadata.
+- **Memory:** `NvrtcCompilationCache` is a caller-owned bounded in-memory LRU
+  of successful PTX compilations. Cache hits rebind PTX metadata to the current
+  generated Scala artifact.
+- **Persistent artifacts:** `NvrtcCompiler.version()` queries the loaded
+  compiler without creating or compiling a program, so it participates in the
+  key before lookup. The versioned, checksum-verified `NvrtcArtifactStore`
+  atomically persists generated CUDA C++, PTX, compiler logs, and compilation
+  metadata while rebinding diagnostics to the current Scala source map.
+- **Persistent mode:** `NvrtcCompilationCache.persistent(maximumEntries,
+  store)` composes memory, disk, then NVRTC. Store I/O failures are cache
+  misses; invalid entries are removed and repaired by successful recompilation.
+  `clear()` clears memory only, while `clearPersistent()` clears the disk layer.
+
+### Native module reuse
+
+Within one `CudaContext`, `load` also
 deduplicates live native CUDA modules by the SHA-256 identity of their PTX.
 Each caller receives its own provenance-aware `CudaModule` wrapper, while the
 shared native module unloads only after the final wrapper and its in-flight work

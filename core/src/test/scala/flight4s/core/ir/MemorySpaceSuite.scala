@@ -395,6 +395,42 @@ class MemorySpaceSuite extends FunSuite:
     )
     assertEquals(moduleResult, ValidationResult(Vector.empty))
 
+  test("literal constant-array indexes must fit the declared element count"):
+    val coefficients = ConstantArray("coefficients", F32, 2)
+    val definition = KernelIR(
+      "constantLiteralBounds",
+      params(),
+      Block(
+        Vector(
+          LocalDeclaration(
+            LocalVariable("negative", F32),
+            Load(ConstantElement("coefficients", literal(-1), F32))
+          ),
+          LocalDeclaration(
+            LocalVariable("pastEnd", F32),
+            Load(ConstantElement("coefficients", literal(2), F32))
+          ),
+          LocalDeclaration(
+            LocalVariable("dynamic", F32),
+            Load(ConstantElement("coefficients", threadIdx.x, F32))
+          )
+        )
+      )
+    )
+    val module = CudaModuleIR(Vector(coefficients), Vector(definition))
+
+    val errors = ModuleValidator.validate(module).errors
+
+    assertEquals(
+      errors.map(_.code),
+      Vector(
+        ValidationCode.ConstantIndexOutOfBounds,
+        ValidationCode.ConstantIndexOutOfBounds
+      )
+    )
+    assert(errors.head.message.contains("found -1"))
+    assert(errors(1).message.contains("found 2"))
+
   test("local arrays require positive sizes and unique active names"):
     val first = LocalArray("scratch", F32, 4)
     val duplicate = LocalArray("scratch", F32, 0)

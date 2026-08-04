@@ -39,6 +39,7 @@ enum ValidationCode:
   case WriteToReadOnlyBuffer
   case UnknownConstant
   case ConstantTypeMismatch
+  case ConstantIndexOutOfBounds
   case UnknownSharedMemory
   case SharedMemoryTypeMismatch
   case SharedMemoryIndexRankMismatch
@@ -873,7 +874,7 @@ object KernelValidator:
                   )
                 )
               case Some(constant) =>
-                requireSameType(
+                val typeErrors = requireSameType(
                   element.valueType,
                   constant.valueType,
                   s"constant element type ${element.valueType.cudaName} does not match " +
@@ -882,6 +883,15 @@ object KernelValidator:
                   element.span,
                   ValidationCode.ConstantTypeMismatch
                 )
+                val boundsErrors = validateLiteralArrayIndex(
+                  element.index,
+                  constant.elementCount,
+                  s"constant array '${element.arrayName}'",
+                  s"$location.index",
+                  ValidationCode.ConstantIndexOutOfBounds
+                )
+
+                typeErrors ++ boundsErrors
 
         indexErrors ++ declarationErrors
 
