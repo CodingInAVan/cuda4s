@@ -51,6 +51,9 @@ enum ValidationCode:
   case ReductionIndexConflictsWithParameter
   case UnboundReductionIndex
 
+enum ValidationWarningCode:
+  case BarrierMayDiverge
+
 final case class ValidationError(
     code: ValidationCode,
     message: String,
@@ -58,7 +61,17 @@ final case class ValidationError(
     span: SourceSpan = SourceSpan.Unknown
 )
 
-final case class ValidationResult(errors: Vector[ValidationError]):
+final case class ValidationWarning(
+    code: ValidationWarningCode,
+    message: String,
+    location: String,
+    span: SourceSpan = SourceSpan.Unknown
+)
+
+final case class ValidationResult(
+    errors: Vector[ValidationError],
+    warnings: Vector[ValidationWarning] = Vector.empty
+):
   def isValid: Boolean = errors.isEmpty
 
   def toEither: Either[Vector[ValidationError], Unit] =
@@ -125,7 +138,10 @@ object KernelValidator:
       )
     )
 
-    ValidationResult(parameterErrors ++ sharedMemoryErrors ++ bodyErrors)
+    ValidationResult(
+      parameterErrors ++ sharedMemoryErrors ++ bodyErrors,
+      BarrierDivergenceAnalysis.warnings(kernel.body)
+    )
 
   private def validateParameters(
       kernel: KernelIR[?],

@@ -76,12 +76,22 @@ object ModuleValidator:
         )
       }
 
-    val kernelErrors = module.kernels.zipWithIndex.flatMap {
+    val kernelValidationResults = module.kernels.zipWithIndex.map {
       case (kernel, index) =>
         KernelValidator
           .validateInModule(kernel, module.constants)
-          .errors
-          .map(error => error.copy(location = s"kernels[$index].${error.location}"))
+    }
+
+    val kernelErrors = kernelValidationResults.zipWithIndex.flatMap {
+      case (result, index) =>
+        result.errors.map(error => error.copy(location = s"kernels[$index].${error.location}"))
+    }
+
+    val kernelWarnings = kernelValidationResults.zipWithIndex.flatMap {
+      case (result, index) =>
+        result.warnings.map(warning =>
+          warning.copy(location = s"kernels[$index].${warning.location}")
+        )
     }
 
     ValidationResult(
@@ -89,5 +99,6 @@ object ModuleValidator:
         duplicateConstantErrors ++
         duplicateKernelErrors ++
         symbolConflictErrors ++
-        kernelErrors
+        kernelErrors,
+      kernelWarnings
     )
