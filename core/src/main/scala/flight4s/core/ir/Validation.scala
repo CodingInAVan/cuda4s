@@ -26,6 +26,7 @@ enum ValidationCode:
   case UnboundLocal
   case UnknownLocalArray
   case LocalArrayTypeMismatch
+  case LocalArrayIndexOutOfBounds
   case LocalTypeMismatch
   case InvalidLoopIndexName
   case LoopIndexConflictsWithBinding
@@ -41,6 +42,7 @@ enum ValidationCode:
   case UnknownSharedMemory
   case SharedMemoryTypeMismatch
   case SharedMemoryIndexRankMismatch
+  case SharedMemoryIndexOutOfBounds
   case ExpressionTypeMismatch
   case UnknownIntrinsic
   case InvalidReductionIndexName
@@ -928,7 +930,24 @@ object KernelValidator:
                   )
                 )
 
-            typeErrors ++ rankErrors
+            val boundsErrors = memory.size match
+              case StaticSharedMemory(layout)
+                  if element.indices.size == layout.rank =>
+                element.indices
+                  .zip(layout.logicalDimensions)
+                  .zipWithIndex
+                  .flatMap { case ((index, upperBound), indexPosition) =>
+                    validateLiteralArrayIndex(
+                      index,
+                      upperBound,
+                      s"shared array '${element.arrayName}' index $indexPosition",
+                      s"$location.indices[$indexPosition]",
+                      ValidationCode.SharedMemoryIndexOutOfBounds
+                    )
+                  }
+              case _ => Vector.empty
+
+            typeErrors ++ rankErrors ++ boundsErrors
 
         indexErrors ++ declarationErrors
 
@@ -946,7 +965,7 @@ object KernelValidator:
               )
             )
           case Some(array) =>
-            requireSameType(
+            val typeErrors = requireSameType(
               element.valueType,
               array.valueType,
               s"local array element type ${element.valueType.cudaName} does not match " +
@@ -955,6 +974,15 @@ object KernelValidator:
               element.span,
               ValidationCode.LocalArrayTypeMismatch
             )
+            val boundsErrors = validateLiteralArrayIndex(
+              element.index,
+              array.elementCount,
+              s"local array '${element.arrayName}'",
+              s"$location.index",
+              ValidationCode.LocalArrayIndexOutOfBounds
+            )
+
+            typeErrors ++ boundsErrors
 
         indexErrors ++ declarationErrors
 
@@ -1008,6 +1036,27 @@ object KernelValidator:
         location,
         index.span
       )
+
+  private def validateLiteralArrayIndex(
+      index: Expr[Int],
+      exclusiveUpperBound: Int,
+      description: String,
+      location: String,
+      code: ValidationCode
+  ): Vector[ValidationError] =
+    index match
+      case Literal(value, _, _)
+          if exclusiveUpperBound > 0 &&
+            (value < 0 || value >= exclusiveUpperBound) =>
+        Vector(
+          ValidationError(
+            code,
+            s"$description must be in [0, $exclusiveUpperBound), found $value",
+            location,
+            index.span
+          )
+        )
+      case _ => Vector.empty
 
   private def validateLocalName(
       local: LocalVariable[?],
