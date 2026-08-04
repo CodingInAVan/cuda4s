@@ -436,3 +436,91 @@ class MemorySpaceSuite extends FunSuite:
       codes,
       Vector(ValidationCode.InvalidLocalArrayElementCount)
     )
+
+  test("literal local-array indexes must fit the declared element count"):
+    val scratch = LocalArray("scratch", F32, 2)
+    val definition = KernelIR(
+      "localArrayLiteralBounds",
+      params(),
+      Block(
+        Vector(
+          LocalArrayDeclaration(scratch),
+          Store(
+            LocalArrayElement("scratch", literal(-1), F32),
+            literal(1.0f)
+          ),
+          Store(
+            LocalArrayElement("scratch", literal(2), F32),
+            literal(1.0f)
+          ),
+          Store(
+            LocalArrayElement("scratch", threadIdx.x, F32),
+            literal(1.0f)
+          )
+        )
+      )
+    )
+
+    val errors = KernelValidator.validate(definition).errors
+
+    assertEquals(
+      errors.map(_.code),
+      Vector(
+        ValidationCode.LocalArrayIndexOutOfBounds,
+        ValidationCode.LocalArrayIndexOutOfBounds
+      )
+    )
+    assert(errors.head.message.contains("found -1"))
+    assert(errors(1).message.contains("found 2"))
+
+  test("literal shared-memory indexes must fit logical rather than padded dimensions"):
+    val tile =
+      SharedArray(
+        "tile",
+        F32,
+        StaticSharedMemory.twoDimensional(
+          rows = 2,
+          columns = 3,
+          rowStride = 4
+        )
+      )
+    val dynamic = SharedArray("dynamic", F32, DynamicSharedMemory)
+    val definition = KernelIR(
+      "sharedLiteralBounds",
+      params(),
+      Block(
+        Vector(
+          Store(
+            SharedElement("tile", Vector(literal(2), literal(0)), F32),
+            literal(1.0f)
+          ),
+          Store(
+            SharedElement("tile", Vector(literal(0), literal(3)), F32),
+            literal(1.0f)
+          ),
+          Store(
+            SharedElement(
+              "dynamic",
+              Vector(literal(Int.MaxValue)),
+              F32
+            ),
+            literal(1.0f)
+          )
+        )
+      ),
+      Vector(tile, dynamic)
+    )
+
+    val errors = KernelValidator.validate(definition).errors
+
+    assertEquals(
+      errors.map(_.code),
+      Vector(
+        ValidationCode.SharedMemoryIndexOutOfBounds,
+        ValidationCode.SharedMemoryIndexOutOfBounds
+      )
+    )
+    assert(errors.head.message.contains("index 0"))
+    assert(errors.head.message.contains("found 2"))
+    assert(errors(1).message.contains("index 1"))
+    assert(errors(1).message.contains("found 3"))
