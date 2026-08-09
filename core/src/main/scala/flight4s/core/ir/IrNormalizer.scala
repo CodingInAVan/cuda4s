@@ -3,89 +3,172 @@ package flight4s.core.ir
 import flight4s.core.types.{Bool, I32}
 
 private[core] object IrNormalizer:
+  private final case class ConstantScope(
+      integerLocals: Map[String, Int] = Map.empty
+  ):
+    def bind(local: LocalVariable[?], value: Expr[?]): ConstantScope =
+      if local.valueType != I32 then without(local.name)
+      else
+        integerLiteralValue(value) match
+          case Some(integer) => copy(integerLocals = integerLocals.updated(local.name, integer))
+          case None => without(local.name)
+
+    def resolve(local: LocalVariable[?], span: SourceSpan): Option[Literal[Int]] =
+      if local.valueType != I32 then None
+      else integerLocals.get(local.name).map(value => Literal(value, I32, span))
+
+    def without(name: String): ConstantScope =
+      copy(integerLocals = integerLocals.removed(name))
+
+  private object ConstantScope:
+    val empty: ConstantScope = ConstantScope()
+
   def module(module: CudaModuleIR): CudaModuleIR =
     module.copy(kernels = module.kernels.map(kernel))
 
   def kernel[Args <: Tuple](kernel: KernelIR[Args]): KernelIR[Args] =
-    kernel.copy(body = block(kernel.body))
+    kernel.copy(body = normalizeBlock(kernel.body, ConstantScope.empty)._1)
 
   def block(block: Block): Block =
-    Block(block.statements.map(statement))
+    normalizeBlock(block, ConstantScope.empty)._1
 
-  def statement(statement: Stmt): Stmt = statement match
+  def statement(statement: Stmt): Stmt =
+    normalizeStatement(statement, ConstantScope.empty)._1
+
+  def expression[T](expr: Expr[T]): Expr[T] =
+    expression(expr, ConstantScope.empty)
+
+  private def normalizeBlock(
+      block: Block,
+      initialScope: ConstantScope
+  ): (Block, ConstantScope) =
+    val (statements, finalScope) = block.statements.foldLeft(
+      (Vector.empty[Stmt], initialScope)
+    ) { case ((normalizedStatements, scope), statement) =>
+      val (normalizedStatement, nextScope) = normalizeStatement(statement, scope)
+      (normalizedStatements :+ normalizedStatement, nextScope)
+    }
+    (Block(statements), finalScope)
+
+  private def normalizeStatement(
+      statement: Stmt,
+      scope: ConstantScope
+  ): (Stmt, ConstantScope) = statement match
     case declaration: LocalDeclaration[?] =>
-      normalizeLocalDeclaration(declaration)
-    case declaration: LocalArrayDeclaration[?] => declaration
-    case store: Store[?, ?] => normalizeStore(store)
-    case accumulation: Accumulate[?] =>
-      accumulation.copy(value = expression(accumulation.value))
-    case branch: IfThen =>
-      branch.copy(
-        condition = expression(branch.condition),
-        thenBlock = block(branch.thenBlock),
-        elseBlock = branch.elseBlock.map(block)
+      val normalized = declaration.copy(
+        initial = expression(declaration.initial, scope)
       )
-    case loop: ForLoop =>
-      loop.copy(
-        from = expression(loop.from),
-        until = expression(loop.until),
-        body = block(loop.body)
-      )
-    case barrier: Barrier => barrier
+      (normalized, scope.bind(declaration.local, normalized.initial))
 
-  def expression[T](expr: Expr[T]): Expr[T] = expr match
+    case declaration: LocalArrayDeclaration[?] => (declaration, scope)
+
+    case store: Store[?, ?] =>
+      val normalized = normalizeStore(store, scope)
+      val nextScope = normalized.to match
+        case local: LocalVariable[?] => scope.bind(local, normalized.value)
+        case _ => scope
+      (normalized, nextScope)
+
+    case accumulation: Accumulate[?] =>
+      val normalized = accumulation.copy(value = expression(accumulation.value, scope))
+      (normalized, scope.without(accumulation.target.name))
+
+    case branch: IfThen =>
+      val (thenBlock, _) = normalizeBlock(branch.thenBlock, scope)
+      val elseBlock = branch.elseBlock.map { block =>
+        normalizeBlock(block, scope)._1
+      }
+      (
+        branch.copy(
+          condition = expression(branch.condition, scope),
+          thenBlock = thenBlock,
+          elseBlock = elseBlock
+        ),
+        ConstantScope.empty
+      )
+
+    case loop: ForLoop =>
+      val (body, _) = normalizeBlock(loop.body, ConstantScope.empty)
+      (
+        loop.copy(
+          from = expression(loop.from, scope),
+          until = expression(loop.until, scope),
+          body = body
+        ),
+        ConstantScope.empty
+      )
+
+    case barrier: Barrier => (barrier, scope)
+
+  private def expression[T](expr: Expr[T], scope: ConstantScope): Expr[T] = expr match
     case literal: Literal[?] => literal.asInstanceOf[Expr[T]]
     case binary: Binary[?] =>
-      normalizeBinary(binary).asInstanceOf[Expr[T]]
+      normalizeBinary(binary, scope).asInstanceOf[Expr[T]]
     case comparison: Compare[?] =>
-      normalizeComparison(comparison).asInstanceOf[Expr[T]]
+      normalizeComparison(comparison, scope).asInstanceOf[Expr[T]]
     case intrinsic: Intrinsic[?] => intrinsic.asInstanceOf[Expr[T]]
     case conversion: Convert[?, ?] =>
       conversion
-        .copy(value = expression(conversion.value))
+        .copy(value = expression(conversion.value, scope))
         .asInstanceOf[Expr[T]]
     case accumulation: ToAccumulator[?, ?] =>
       accumulation
-        .copy(value = expression(accumulation.value))
+        .copy(value = expression(accumulation.value, scope))
         .asInstanceOf[Expr[T]]
     case index: ReductionIndex => index.asInstanceOf[Expr[T]]
     case index: LoopIndex => index.asInstanceOf[Expr[T]]
     case reduction: ReduceSum[?, ?] =>
       reduction
         .copy(
-          from = expression(reduction.from),
-          until = expression(reduction.until),
-          initial = expression(reduction.initial),
-          value = expression(reduction.value)
+          from = expression(reduction.from, scope),
+          until = expression(reduction.until, scope),
+          initial = expression(reduction.initial, scope),
+          value = expression(reduction.value, scope)
         )
         .asInstanceOf[Expr[T]]
     case load: Load[?, ?, ?] =>
-      load.copy(from = place(load.from)).asInstanceOf[Expr[T]]
+      normalizeLoad(load, scope).asInstanceOf[Expr[T]]
     case parameter: ScalarParam[?] => parameter.asInstanceOf[Expr[T]]
 
-  private def normalizeLocalDeclaration[T](
-      declaration: LocalDeclaration[T]
-  ): LocalDeclaration[T] =
-    declaration.copy(initial = expression(declaration.initial))
-
   private def normalizeStore[T, Space <: AddressSpace](
-      store: Store[T, Space]
+      store: Store[T, Space],
+      scope: ConstantScope
   ): Store[T, Space] =
     store.copy(
-      to = place(store.to),
-      value = expression(store.value)
+      to = place(store.to, scope),
+      value = expression(store.value, scope)
     )
 
-  private def normalizeBinary[T](binary: Binary[T]): Expr[T] =
-    val left = expression(binary.left)
-    val right = expression(binary.right)
+  private def normalizeLoad[
+      T,
+      Space <: AddressSpace,
+      Mode <: AccessMode
+  ](
+      load: Load[T, Space, Mode],
+      scope: ConstantScope
+  ): Expr[T] = load.from match
+    case local: LocalVariable[?] =>
+      scope.resolve(local, load.span) match
+        case Some(literal) => literal.asInstanceOf[Expr[T]]
+        case None => load.copy(from = place(load.from, scope))
+    case _ => load.copy(from = place(load.from, scope))
+
+  private def normalizeBinary[T](
+      binary: Binary[T],
+      scope: ConstantScope
+  ): Expr[T] =
+    val left = expression(binary.left, scope)
+    val right = expression(binary.right, scope)
     foldIntegerBinary(binary, left, right).getOrElse(
       binary.copy(left = left, right = right)
     )
 
-  private def normalizeComparison[T](comparison: Compare[T]): Expr[Boolean] =
-    val left = expression(comparison.left)
-    val right = expression(comparison.right)
+  private def normalizeComparison[T](
+      comparison: Compare[T],
+      scope: ConstantScope
+  ): Expr[Boolean] =
+    val left = expression(comparison.left, scope)
+    val right = expression(comparison.right, scope)
     foldIntegerComparison(comparison, left, right).getOrElse(
       comparison.copy(left = left, right = right)
     )
@@ -94,21 +177,26 @@ private[core] object IrNormalizer:
       T,
       Space <: AddressSpace,
       Mode <: AccessMode
-  ](place: Place[T, Space, Mode]): Place[T, Space, Mode] = place match
+  ](
+      place: Place[T, Space, Mode],
+      scope: ConstantScope
+  ): Place[T, Space, Mode] = place match
     case buffer: BufferElement[?, ?] =>
-      buffer.copy(index = expression(buffer.index)).asInstanceOf[Place[T, Space, Mode]]
+      buffer
+        .copy(index = expression(buffer.index, scope))
+        .asInstanceOf[Place[T, Space, Mode]]
     case constant: ConstantElement[?] =>
       constant
-        .copy(index = expression(constant.index))
+        .copy(index = expression(constant.index, scope))
         .asInstanceOf[Place[T, Space, Mode]]
     case shared: SharedElement[?] =>
       shared
-        .copy(indices = shared.indices.map(expression))
+        .copy(indices = shared.indices.map(expression(_, scope)))
         .asInstanceOf[Place[T, Space, Mode]]
     case local: LocalVariable[?] => local.asInstanceOf[Place[T, Space, Mode]]
     case localArray: LocalArrayElement[?] =>
       localArray
-        .copy(index = expression(localArray.index))
+        .copy(index = expression(localArray.index, scope))
         .asInstanceOf[Place[T, Space, Mode]]
 
   private def foldIntegerBinary[T](
@@ -184,3 +272,10 @@ private[core] object IrNormalizer:
       case ComparisonOperator.GreaterThanOrEqual => left >= right
       case ComparisonOperator.Equal => left == right
       case ComparisonOperator.NotEqual => left != right
+
+  private def integerLiteralValue(expression: Expr[?]): Option[Int] = expression match
+    case literal: Literal[?] if literal.valueType == I32 =>
+      literal.value match
+        case value: Int => Some(value)
+        case _ => None
+    case _ => None

@@ -427,6 +427,30 @@ class CudaCodegenSuite extends FunSuite:
     assertEquals(originalStore.to.asInstanceOf[BufferElement[Int, ReadWrite]].index, index)
     assertEquals(originalStore.value, value)
 
+  test("code generation propagates straight-line I32 locals"):
+    val outputBuffer = output[Int]("output")
+    val definition = kernel("propagateLocal", params(outputBuffer)) { bindings =>
+      val width = local("width", literal(2) + literal(3))
+      bindings.head(width.read) := width.read * literal(4)
+    }
+
+    val generated = generatedKernel(definition)
+
+    assertEquals(
+      generated.cudaSource,
+      """extern "C" __global__ void propagateLocal(int* output) {
+        |  int width = 5;
+        |  output[5] = 20;
+        |}
+        |""".stripMargin.replace("\r\n", "\n")
+    )
+    val originalDeclaration = definition.body.statements.head
+      .asInstanceOf[LocalDeclaration[Int]]
+    val originalStore = definition.body.statements(1)
+      .asInstanceOf[Store[Int, Global]]
+    assert(originalDeclaration.initial.isInstanceOf[Binary[?]])
+    assert(originalStore.value.isInstanceOf[Binary[?]])
+
   test("source generation is gated by module validation"):
     val invalid = KernelIR(
       "invalid-name",
