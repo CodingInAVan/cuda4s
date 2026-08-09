@@ -381,6 +381,52 @@ class CudaCodegenSuite extends FunSuite:
       Some(SourceMapEntry(4, storeSpan))
     )
 
+  test("code generation normalizes literals without changing statement source maps"):
+    val storeSpan = SourceSpan("Normalized.scala", 7, 5, 7, 41)
+    val index = Binary(
+      BinaryOperator.Add,
+      Literal(1, I32),
+      Literal(2, I32),
+      I32
+    )
+    val value = Binary(
+      BinaryOperator.Multiply,
+      Literal(3, I32),
+      Literal(4, I32),
+      I32
+    )
+    val outputBuffer = output[Int]("output")
+    val definition = KernelIR(
+      "normalizedLiterals",
+      params(outputBuffer),
+      Block(
+        Vector(
+          Store(
+            BufferElement[Int, ReadWrite]("output", index, I32),
+            value,
+            storeSpan
+          )
+        )
+      )
+    )
+
+    val generated = generatedModule(CudaModuleIR(Vector.empty, Vector(definition)))
+
+    assertEquals(
+      generated.cudaSource,
+      """extern "C" __global__ void normalizedLiterals(int* output) {
+        |  output[3] = 12;
+        |}
+        |""".stripMargin.replace("\r\n", "\n")
+    )
+    assertEquals(
+      generated.sourceMap.entries,
+      Vector(SourceMapEntry(2, storeSpan))
+    )
+    val originalStore = definition.body.statements.head.asInstanceOf[Store[Int, Global]]
+    assertEquals(originalStore.to.asInstanceOf[BufferElement[Int, ReadWrite]].index, index)
+    assertEquals(originalStore.value, value)
+
   test("source generation is gated by module validation"):
     val invalid = KernelIR(
       "invalid-name",

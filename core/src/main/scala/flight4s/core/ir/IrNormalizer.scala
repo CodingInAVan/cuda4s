@@ -3,6 +3,9 @@ package flight4s.core.ir
 import flight4s.core.types.{Bool, I32}
 
 private[core] object IrNormalizer:
+  def module(module: CudaModuleIR): CudaModuleIR =
+    module.copy(kernels = module.kernels.map(kernel))
+
   def kernel[Args <: Tuple](kernel: KernelIR[Args]): KernelIR[Args] =
     kernel.copy(body = block(kernel.body))
 
