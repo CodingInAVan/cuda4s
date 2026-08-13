@@ -67,6 +67,25 @@ class StructuredControlFlowSuite extends FunSuite:
 
     assert(codes.contains(ValidationCode.UnboundLocal))
 
+  test("locals declared in a scoped block do not escape the block"):
+    val temporary = LocalVariable("temporary", F32)
+    val definition = KernelIR(
+      "scopedBlock",
+      params(),
+      Block(
+        Vector(
+          ScopedBlock(
+            Block(Vector(LocalDeclaration(temporary, literal(0.0f))))
+          ),
+          Store(temporary, literal(1.0f))
+        )
+      )
+    )
+
+    val codes = KernelValidator.validate(definition).errors.map(_.code)
+
+    assert(codes.contains(ValidationCode.UnboundLocal))
+
   test("loop indices do not escape their loop body"):
     val result = output[Float]("result")
     val index = LoopIndex("i")

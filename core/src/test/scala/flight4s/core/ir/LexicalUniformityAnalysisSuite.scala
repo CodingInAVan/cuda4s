@@ -58,6 +58,33 @@ class LexicalUniformityAnalysisSuite extends FunSuite:
       Uniformity.Varying
     )
 
+  test("scoped blocks update visible locals without leaking declarations"):
+    val visible = LocalVariable("visible", I32)
+    val nested = LocalVariable("nested", I32)
+    val initial = UniformityAnalysis.scopeAfter(
+      LocalDeclaration(visible, threadIdx.x),
+      UniformityScope.empty
+    )
+    val scoped = ScopedBlock(
+      Block(
+        Vector(
+          Store(visible, literal(1)),
+          LocalDeclaration(nested, threadIdx.x)
+        )
+      )
+    )
+
+    val result = UniformityAnalysis.scopeAfter(scoped, initial)
+
+    assertEquals(
+      UniformityAnalysis.expression(Load(visible), result),
+      Uniformity.GridUniform
+    )
+    assertEquals(
+      UniformityAnalysis.expression(Load(nested), result),
+      Uniformity.Unknown
+    )
+
   test("control-dependent local mutations remain conservative"):
     val branchDefinition = kernel("branchMutatesLocal", params()) { _ =>
       val accumulator = local("accumulator", literal(0.0f))

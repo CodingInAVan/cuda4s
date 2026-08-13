@@ -88,6 +88,27 @@ class BarrierDivergenceWarningSuite extends FunSuite:
       )
     )
 
+  test("divergent control remains visible through scoped blocks"):
+    val definition = KernelIR(
+      "scopedUnsafeBarrier",
+      params(),
+      Block(
+        Vector(
+          IfThen(
+            threadIdx.x < literal(32),
+            Block(Vector(ScopedBlock(Block(Vector(Barrier())))))
+          )
+        )
+      )
+    )
+
+    val result = KernelValidator.validate(definition)
+
+    assertEquals(
+      result.warnings.map(_.location),
+      Vector("body.statements[0].then.statements[0].body.statements[0]")
+    )
+
   test("grid-uniform local conditions do not warn"):
     val definition = kernel("uniformLocalBarrier", params()) { _ =>
       val condition = local("condition", literal(true))

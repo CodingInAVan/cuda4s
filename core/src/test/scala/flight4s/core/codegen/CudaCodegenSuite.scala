@@ -471,6 +471,84 @@ class CudaCodegenSuite extends FunSuite:
       .asInstanceOf[Store[Int, Global]]
     assert(originalStore.value.isInstanceOf[Binary[?]])
 
+  test("scoped blocks emit lexical braces for reusable local names"):
+    val outputBuffer = output[Int]("output")
+    val temporary = LocalVariable("temporary", I32)
+    val definition = KernelIR(
+      "scopedLocals",
+      params(outputBuffer),
+      Block(
+        Vector(
+          ScopedBlock(
+            Block(
+              Vector(
+                LocalDeclaration(temporary, literal(1)),
+                Store(
+                  BufferElement[Int, ReadWrite]("output", literal(0), I32),
+                  Load(temporary)
+                )
+              )
+            )
+          ),
+          LocalDeclaration(temporary, literal(2)),
+          Store(
+            BufferElement[Int, ReadWrite]("output", literal(1), I32),
+            Load(temporary)
+          )
+        )
+      )
+    )
+
+    val generated = generatedModule(CudaModuleIR(Vector.empty, Vector(definition)))
+
+    assertEquals(
+      generated.cudaSource,
+      """extern "C" __global__ void scopedLocals(int* output) {
+        |  {
+        |    int temporary = 1;
+        |    output[0] = 1;
+        |  }
+        |  int temporary = 2;
+        |  output[1] = 2;
+        |}
+        |""".stripMargin.replace("\r\n", "\n")
+    )
+
+  test("code generation emits only the selected literal branch"):
+    val branchSpan = SourceSpan("Branches.scala", 6, 5, 10, 6)
+    val outputBuffer = output[Int]("output")
+    val outputElement = BufferElement[Int, ReadWrite]("output", literal(0), I32)
+    val definition = KernelIR(
+      "selectedBranch",
+      params(outputBuffer),
+      Block(
+        Vector(
+          IfThen(
+            Literal(false, Bool),
+            Block(Vector(Store(outputElement, Literal(1, I32)))),
+            Some(Block(Vector(Store(outputElement, Literal(2, I32))))),
+            branchSpan
+          )
+        )
+      )
+    )
+
+    val generated = generatedModule(CudaModuleIR(Vector.empty, Vector(definition)))
+
+    assertEquals(
+      generated.cudaSource,
+      """extern "C" __global__ void selectedBranch(int* output) {
+        |  {
+        |    output[0] = 2;
+        |  }
+        |}
+        |""".stripMargin.replace("\r\n", "\n")
+    )
+    assertEquals(
+      generated.sourceMap.entries,
+      Vector(SourceMapEntry(2, branchSpan))
+    )
+
   test("source generation is gated by module validation"):
     val invalid = KernelIR(
       "invalid-name",

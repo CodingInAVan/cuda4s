@@ -30,6 +30,13 @@ private[core] final case class UniformityScope(
   def withReductionIndex(name: String, uniformity: Uniformity): UniformityScope =
     copy(reductionIndexes = reductionIndexes.updated(name, uniformity))
 
+  def withVisibleLocalsFrom(other: UniformityScope): UniformityScope =
+    copy(
+      locals = locals.map { case (name, uniformity) =>
+        name -> other.locals.getOrElse(name, uniformity)
+      }
+    )
+
   def mergeVisible(others: UniformityScope*): UniformityScope =
     copy(
       locals = locals.map { case (name, uniformity) =>
@@ -129,6 +136,9 @@ private[core] object UniformityAnalysis:
             expression(branch.condition, scope)
           )
 
+      case scoped: ScopedBlock =>
+        scope.withVisibleLocalsFrom(scopeAfter(scoped.body, scope))
+
       case loop: ForLoop =>
         val bodyScope = scopeAfter(loop.body, loopScope(loop, scope))
         scope
@@ -176,5 +186,6 @@ private[core] object UniformityAnalysis:
     case branch: IfThen =>
       modifiedLocalNames(branch.thenBlock) ++
         branch.elseBlock.toVector.flatMap(modifiedLocalNames).toSet
+    case scoped: ScopedBlock => modifiedLocalNames(scoped.body)
     case loop: ForLoop => modifiedLocalNames(loop.body)
     case _: LocalDeclaration[?] | _: LocalArrayDeclaration[?] | _: Barrier => Set.empty

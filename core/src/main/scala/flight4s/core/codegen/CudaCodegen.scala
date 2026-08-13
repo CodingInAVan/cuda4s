@@ -7,7 +7,7 @@ import flight4s.core.ir.*
 import flight4s.core.types.*
 
 object CudaCodegen:
-  val ArtifactVersion: Int = 4
+  val ArtifactVersion: Int = 5
 
   def generate[Args <: Tuple](
       kernel: Kernel[Args],
@@ -282,6 +282,12 @@ object CudaCodegen:
                   writer.line(s"$prefix}")
                   Right(())
             }
+          }
+
+        case scoped: ScopedBlock =>
+          writer.line(s"$prefix{", scoped.span)
+          emitBlock(scoped.body, indentation + 1).map { _ =>
+            writer.line(s"$prefix}")
           }
 
         case loop: ForLoop =>
@@ -577,6 +583,8 @@ object CudaCodegen:
         collectTypes(branch.condition) ++
           collectTypes(branch.thenBlock) ++
           branch.elseBlock.toVector.flatMap(collectTypes)
+      case scoped: ScopedBlock =>
+        collectTypes(scoped.body)
       case loop: ForLoop =>
         collectTypes(loop.from) ++
           collectTypes(loop.until) ++
@@ -638,6 +646,8 @@ object CudaCodegen:
         collectIdentifiers(branch.condition) ++
           collectIdentifiers(branch.thenBlock) ++
           branch.elseBlock.toSet.flatMap(collectIdentifiers)
+      case scoped: ScopedBlock =>
+        collectIdentifiers(scoped.body)
       case loop: ForLoop =>
         collectIdentifiers(loop.from) ++
           collectIdentifiers(loop.until) ++
