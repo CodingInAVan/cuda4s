@@ -74,3 +74,15 @@ class EffectAnalysisSuite extends FunSuite:
       )
     )
     assert(effect.hasBarrier)
+
+  test("scoped blocks expose their nested effects"):
+    val outputElement = BufferElement[Float, ReadWrite]("output", literal(0), F32)
+    val scoped = ScopedBlock(
+      Block(Vector(Store(outputElement, literal(1.0f)), Barrier()))
+    )
+
+    val effect = EffectAnalysis.statement(scoped)
+
+    assertEquals(effect.readSpaces, Set.empty)
+    assertEquals(effect.writtenSpaces, Set(EffectMemorySpace.Global))
+    assert(effect.hasBarrier)

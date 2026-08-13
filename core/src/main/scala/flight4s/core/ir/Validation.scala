@@ -485,6 +485,9 @@ object KernelValidator:
             validateBlock(_, parameters, s"$location.else", scope)
           )
 
+      case scoped: ScopedBlock =>
+        validateBlock(scoped.body, parameters, s"$location.body", scope)
+
       case loop: ForLoop =>
         val nameErrors =
           validateLoopIndexName(loop.index, parameters, scope, s"$location.index")

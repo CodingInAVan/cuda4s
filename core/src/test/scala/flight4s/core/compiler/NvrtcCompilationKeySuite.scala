@@ -26,7 +26,7 @@ class NvrtcCompilationKeySuite extends FunSuite:
     assertEquals(first.toString, first.hex)
     assertEquals(
       first.hex,
-      "82a8a3676d7ffcec9a188a102c2e8260ba10d070bb331f365809e2f5213b97a9"
+      "79f218499ddb0c11815649131fba28c3fe70cdcf8995801344c06c3699a962fc"
     )
 
   test("every compiler-relevant input invalidates the key"):

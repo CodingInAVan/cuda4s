@@ -46,6 +46,14 @@ private[core] object BarrierDivergenceAnalysis:
             blockWarnings(_, s"$statementLocation.else", branchMayDiverge, scope)
           )
 
+      case scoped: ScopedBlock =>
+        blockWarnings(
+          scoped.body,
+          s"$statementLocation.body",
+          controlMayDiverge,
+          scope
+        )
+
       case loop: ForLoop =>
         val loopMayDiverge =
           controlMayDiverge ||

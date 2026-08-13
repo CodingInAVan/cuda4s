@@ -215,6 +215,11 @@ final case class IfThen(
     span: SourceSpan = SourceSpan.Unknown
 ) extends ExecutableStmt
 
+final case class ScopedBlock(
+    body: Block,
+    span: SourceSpan = SourceSpan.Unknown
+) extends ExecutableStmt
+
 final case class ForLoop(
     index: LoopIndex,
     from: Expr[Int],

@@ -32,7 +32,7 @@ private[core] object IrNormalizer:
   def block(block: Block): Block =
     normalizeBlock(block, ConstantScope.empty)._1
 
-  def statement(statement: Stmt): Stmt =
+  def statement(statement: Stmt): Option[Stmt] =
     normalizeStatement(statement, ConstantScope.empty)._1
 
   def expression[T](expr: Expr[T]): Expr[T] =
@@ -46,59 +46,85 @@ private[core] object IrNormalizer:
       (Vector.empty[Stmt], initialScope)
     ) { case ((normalizedStatements, scope), statement) =>
       val (normalizedStatement, nextScope) = normalizeStatement(statement, scope)
-      (normalizedStatements :+ normalizedStatement, nextScope)
+      (normalizedStatements ++ normalizedStatement, nextScope)
     }
     (Block(statements), finalScope)
 
   private def normalizeStatement(
       statement: Stmt,
       scope: ConstantScope
-  ): (Stmt, ConstantScope) = statement match
+  ): (Option[Stmt], ConstantScope) = statement match
     case declaration: LocalDeclaration[?] =>
       val normalized = declaration.copy(
         initial = expression(declaration.initial, scope)
       )
-      (normalized, scope.bind(declaration.local, normalized.initial))
+      (Some(normalized), scope.bind(declaration.local, normalized.initial))
 
-    case declaration: LocalArrayDeclaration[?] => (declaration, scope)
+    case declaration: LocalArrayDeclaration[?] => (Some(declaration), scope)
 
     case store: Store[?, ?] =>
       val normalized = normalizeStore(store, scope)
       val nextScope = normalized.to match
         case local: LocalVariable[?] => scope.bind(local, normalized.value)
         case _ => scope
-      (normalized, nextScope)
+      (Some(normalized), nextScope)
 
     case accumulation: Accumulate[?] =>
       val normalized = accumulation.copy(value = expression(accumulation.value, scope))
-      (normalized, scope.without(accumulation.target.name))
+      (Some(normalized), scope.without(accumulation.target.name))
 
     case branch: IfThen =>
-      val (thenBlock, _) = normalizeBlock(branch.thenBlock, scope)
-      val elseBlock = branch.elseBlock.map { block =>
-        normalizeBlock(block, scope)._1
-      }
-      (
-        branch.copy(
-          condition = expression(branch.condition, scope),
-          thenBlock = thenBlock,
-          elseBlock = elseBlock
-        ),
-        ConstantScope.empty
-      )
+      val condition = expression(branch.condition, scope)
+      booleanLiteralValue(condition) match
+        case Some(true) =>
+          normalizeSelectedBlock(branch.thenBlock, branch.span, scope)
+        case Some(false) =>
+          branch.elseBlock match
+            case Some(elseBlock) =>
+              normalizeSelectedBlock(elseBlock, branch.span, scope)
+            case None => (None, scope)
+        case None =>
+          val (thenBlock, _) = normalizeBlock(branch.thenBlock, scope)
+          val elseBlock = branch.elseBlock.map { block =>
+            normalizeBlock(block, scope)._1
+          }
+          (
+            Some(
+              branch.copy(
+                condition = condition,
+                thenBlock = thenBlock,
+                elseBlock = elseBlock
+              )
+            ),
+            ConstantScope.empty
+          )
+
+    case scoped: ScopedBlock =>
+      normalizeSelectedBlock(scoped.body, scoped.span, scope)
 
     case loop: ForLoop =>
       val (body, _) = normalizeBlock(loop.body, ConstantScope.empty)
       (
-        loop.copy(
-          from = expression(loop.from, scope),
-          until = expression(loop.until, scope),
-          body = body
+        Some(
+          loop.copy(
+            from = expression(loop.from, scope),
+            until = expression(loop.until, scope),
+            body = body
+          )
         ),
         ConstantScope.empty
       )
 
-    case barrier: Barrier => (barrier, scope)
+    case barrier: Barrier => (Some(barrier), scope)
+
+  private def normalizeSelectedBlock(
+      block: Block,
+      span: SourceSpan,
+      scope: ConstantScope
+  ): (Option[Stmt], ConstantScope) =
+    val (body, _) = normalizeBlock(block, scope)
+    if body.statements.isEmpty then (None, scope)
+    else (Some(ScopedBlock(body, span)), ConstantScope.empty)
 
   private def expression[T](expr: Expr[T], scope: ConstantScope): Expr[T] = expr match
     case literal: Literal[?] => literal.asInstanceOf[Expr[T]]
@@ -318,3 +344,11 @@ private[core] object IrNormalizer:
         case value: Int => Some(value)
         case _ => None
     case _ => None
+
+  private def booleanLiteralValue(expression: Expr[?]): Option[Boolean] =
+    expression match
+      case literal: Literal[?] if literal.valueType == Bool =>
+        literal.value match
+          case value: Boolean => Some(value)
+          case _ => None
+      case _ => None

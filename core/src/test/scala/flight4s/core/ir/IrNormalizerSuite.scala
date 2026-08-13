@@ -202,6 +202,75 @@ class IrNormalizerSuite extends FunSuite:
     assertEquals(directStoreResult.value, Literal(2, I32))
     assertEquals(accumulationResult.value, Load(value))
 
+  test("prunes literal branches and retains the selected lexical scope"):
+    val firstSpan = SourceSpan("Kernel.scala", 8, 5, 14, 6)
+    val secondSpan = SourceSpan("Kernel.scala", 16, 5, 20, 6)
+    val temporary = LocalVariable("temporary", I32)
+    val firstResult = BufferElement[Int, ReadWrite]("result", literal(0), I32)
+    val secondResult = BufferElement[Int, ReadWrite]("result", literal(1), I32)
+    val definition = KernelIR(
+      "pruneBranches",
+      params(output[Int]("result")),
+      Block(
+        Vector(
+          IfThen(
+            Literal(true, Bool),
+            Block(
+              Vector(
+                LocalDeclaration(temporary, Literal(1, I32)),
+                Store(firstResult, Load(temporary))
+              )
+            ),
+            Some(Block(Vector(Store(firstResult, Literal(99, I32))))),
+            firstSpan
+          ),
+          IfThen(
+            Literal(false, Bool),
+            Block(Vector(Store(secondResult, Literal(99, I32)))),
+            Some(Block(Vector(Store(secondResult, Literal(2, I32))))),
+            secondSpan
+          )
+        )
+      )
+    )
+
+    val normalized = IrNormalizer.kernel(definition)
+    val first = normalized.body.statements.head.asInstanceOf[ScopedBlock]
+    val second = normalized.body.statements(1).asInstanceOf[ScopedBlock]
+    val firstStore = first.body.statements(1).asInstanceOf[Store[Int, Global]]
+    val secondStore = second.body.statements.head.asInstanceOf[Store[Int, Global]]
+
+    assertEquals(first.span, firstSpan)
+    assertEquals(second.span, secondSpan)
+    assertEquals(firstStore.value, Literal(1, I32))
+    assertEquals(secondStore.value, Literal(2, I32))
+    assertEquals(IrNormalizer.kernel(normalized), normalized)
+
+  test("removes no-op literal branches without clearing straight-line facts"):
+    val value = LocalVariable("value", I32)
+    val result = BufferElement[Int, ReadWrite]("result", literal(0), I32)
+    val definition = KernelIR(
+      "removeBranches",
+      params(output[Int]("result")),
+      Block(
+        Vector(
+          LocalDeclaration(value, Literal(5, I32)),
+          IfThen(
+            Literal(false, Bool),
+            Block(Vector(Store(value, Literal(9, I32))))
+          ),
+          IfThen(Literal(true, Bool), Block(Vector.empty)),
+          Store(result, Load(value))
+        )
+      )
+    )
+
+    val normalized = IrNormalizer.kernel(definition)
+    val store = normalized.body.statements(1).asInstanceOf[Store[Int, Global]]
+
+    assertEquals(normalized.body.statements.size, 2)
+    assertEquals(store.value, Literal(5, I32))
+
   test("does not propagate outer local facts through structured control flow"):
     val value = LocalVariable("value", I32)
     val index = LoopIndex("index")
@@ -212,7 +281,7 @@ class IrNormalizerSuite extends FunSuite:
       Block(
         Vector(
           LocalDeclaration(value, Literal(5, I32)),
-          IfThen(Literal(true, Bool), Block(Vector.empty)),
+          IfThen(threadIdx.x < literal(1), Block(Vector.empty)),
           Store(result, Load(value)),
           ForLoop(
             index,

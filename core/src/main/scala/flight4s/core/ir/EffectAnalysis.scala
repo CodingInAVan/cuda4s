@@ -60,6 +60,7 @@ private[core] object EffectAnalysis:
       expression(branch.condition) ++
         block(branch.thenBlock) ++
         branch.elseBlock.map(block).getOrElse(EffectSummary.empty)
+    case scoped: ScopedBlock => block(scoped.body)
     case loop: ForLoop =>
       expression(loop.from) ++ expression(loop.until) ++ block(loop.body)
     case _: Barrier => EffectSummary(hasBarrier = true)
