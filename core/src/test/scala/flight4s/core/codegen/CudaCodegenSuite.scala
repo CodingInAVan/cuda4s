@@ -549,6 +549,48 @@ class CudaCodegenSuite extends FunSuite:
       Vector(SourceMapEntry(2, branchSpan))
     )
 
+  test("code generation reuses a repeated stable I32 expression locally"):
+    val offset = value[Int]("offset")
+    val outputBuffer = output[Int]("output")
+    val definition = kernel("reuseExpression", params(offset, outputBuffer)) { bindings =>
+      val repeated = bindings.head + threadIdx.x
+      bindings.tail.head(threadIdx.x) := repeated * repeated
+    }
+
+    val generated = generatedKernel(definition)
+
+    assertEquals(
+      generated.cudaSource,
+      """extern "C" __global__ void reuseExpression(int offset, int* output) {
+        |  int flight4s_cse_0 = (offset + threadIdx.x);
+        |  output[threadIdx.x] = (flight4s_cse_0 * flight4s_cse_0);
+        |}
+        |""".stripMargin.replace("\r\n", "\n")
+    )
+    assertEquals(definition.body.statements.size, 1)
+    assert(definition.body.statements.head.isInstanceOf[Store[?, ?]])
+    assertEquals(
+      generated.sourceMap.entries.map(_.generatedLine),
+      Vector(2, 3)
+    )
+    assert(generated.sourceMap.entries.forall(_.sourceSpan != SourceSpan.Unknown))
+
+  test("CSE temporary names cannot shadow module constants"):
+    val reserved = constantArray[Int]("flight4s_cse_0", 1)
+    val offset = value[Int]("offset")
+    val outputBuffer = output[Int]("output")
+    val definition = kernel("reservedCseName", params(offset, outputBuffer)) { bindings =>
+      val repeated = bindings.head + threadIdx.x
+      bindings.tail.head(threadIdx.x) := repeated * repeated
+    }
+
+    val generated = generatedModule(
+      module(constants = Vector(reserved), kernels = Vector(definition))
+    )
+
+    assert(generated.cudaSource.contains("int flight4s_cse_1 ="))
+    assert(!generated.cudaSource.contains("int flight4s_cse_0 ="))
+
   test("source generation is gated by module validation"):
     val invalid = KernelIR(
       "invalid-name",
