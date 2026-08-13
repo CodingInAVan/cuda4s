@@ -7,7 +7,7 @@ import flight4s.core.ir.*
 import flight4s.core.types.*
 
 object CudaCodegen:
-  val ArtifactVersion: Int = 6
+  val ArtifactVersion: Int = 7
 
   def generate[Args <: Tuple](
       kernel: Kernel[Args],
@@ -401,9 +401,11 @@ object CudaCodegen:
           reduction.value.span
         )
       yield
+        val lowering = ReductionLoweringStrategy.select(reduction.policy)
         val accumulator = freshNames.accumulator()
         val accumulatorType = reduction.valueType.cudaName
-        s"([&]() { $accumulatorType $accumulator = $initial; " +
+        s"([&]() { /* flight4s reduction: ${lowering.cudaMarker} */ " +
+          s"$accumulatorType $accumulator = $initial; " +
           s"for (int ${reduction.index.name} = $from; " +
           s"${reduction.index.name} < $until; ++${reduction.index.name}) { " +
           s"$accumulator += $accumulatedValue; } return $accumulator; }())"

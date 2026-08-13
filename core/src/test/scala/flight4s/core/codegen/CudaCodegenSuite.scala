@@ -300,6 +300,43 @@ class CudaCodegenSuite extends FunSuite:
     assert(sourceCode.contains(
       "flight4s_accumulator_1 += __half2float(source[i]);"
     ))
+    assert(sourceCode.contains(
+      "/* flight4s reduction: strict/serial-left-fold */"
+    ))
+
+  test("reduction policies emit distinct inspectable lowering strategies"):
+    def generated(policy: ReductionPolicy): String =
+      val outputBuffer = output[Float]("output")
+      val definition = kernel("policyReduction", params(outputBuffer)) { bindings =>
+        val sum = reduceSum(
+          "i",
+          literal(0),
+          literal(4),
+          literal(0.0f),
+          policy
+        )(_ => literal(1.0f))
+        bindings.head(literal(0)) := sum
+      }
+      generatedKernel(definition).cudaSource
+
+    val strict = generated(ReductionPolicy.Strict)
+    val deterministic = generated(ReductionPolicy.Deterministic)
+    val fast = generated(ReductionPolicy.Fast)
+
+    assert(strict.contains("flight4s reduction: strict/serial-left-fold"))
+    assert(deterministic.contains("flight4s reduction: deterministic/serial-stable"))
+    assert(fast.contains("flight4s reduction: fast/serial-fallback"))
+    assertNotEquals(strict, deterministic)
+    assertNotEquals(strict, fast)
+    assertNotEquals(deterministic, fast)
+    assertEquals(
+      strict.replace("strict/serial-left-fold", "selected-strategy"),
+      deterministic.replace("deterministic/serial-stable", "selected-strategy")
+    )
+    assertEquals(
+      strict.replace("strict/serial-left-fold", "selected-strategy"),
+      fast.replace("fast/serial-fallback", "selected-strategy")
+    )
 
   test("generated temporary names cannot shadow module constants"):
     val accumulatorTable =

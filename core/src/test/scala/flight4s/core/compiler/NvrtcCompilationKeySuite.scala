@@ -4,7 +4,7 @@ import munit.FunSuite
 
 import flight4s.core.codegen.*
 import flight4s.core.dsl.CudaDsl.*
-import flight4s.core.ir.SourceSpan
+import flight4s.core.ir.{ReductionPolicy, SourceSpan}
 
 class NvrtcCompilationKeySuite extends FunSuite:
   private val target = ComputeCapability(8, 0)
@@ -26,7 +26,7 @@ class NvrtcCompilationKeySuite extends FunSuite:
     assertEquals(first.toString, first.hex)
     assertEquals(
       first.hex,
-      "7a6968644c3068e7df5b877faddbec84485433b1b96e1222cc57ce11344f191a"
+      "0ca290763cb38aa85be2bba6745fe316ab20e89788c3c9c188f0f154a1caca8a"
     )
 
   test("every compiler-relevant input invalidates the key"):
@@ -123,6 +123,15 @@ class NvrtcCompilationKeySuite extends FunSuite:
 
     assertEquals(derive(generated), derive(remapped))
 
+  test("reduction policies produce distinct compilation identities"):
+    val strict = derive(reductionModule(ReductionPolicy.Strict))
+    val deterministic = derive(reductionModule(ReductionPolicy.Deterministic))
+    val fast = derive(reductionModule(ReductionPolicy.Fast))
+
+    assertNotEquals(strict, deterministic)
+    assertNotEquals(strict, fast)
+    assertNotEquals(deterministic, fast)
+
   test("invalid key inputs are rejected before hashing"):
     val generated = copyModule()
 
@@ -183,6 +192,29 @@ class NvrtcCompilationKeySuite extends FunSuite:
       params(scalar, destination)
     ) { bindings =>
       bindings.tail.head(threadIdx.x) := bindings.head
+    }
+
+    CudaCodegen
+      .generateModule(module(kernels = Vector(definition)))
+      .toOption
+      .get
+
+  private def reductionModule(
+      policy: ReductionPolicy
+  ): GeneratedCudaModule =
+    val destination = output[Float]("destination")
+    val definition = kernel(
+      "reduceValues",
+      params(destination)
+    ) { bindings =>
+      val sum = reduceSum(
+        "i",
+        literal(0),
+        literal(4),
+        literal(0.0f),
+        policy
+      )(_ => literal(1.0f))
+      bindings.head(literal(0)) := sum
     }
 
     CudaCodegen
