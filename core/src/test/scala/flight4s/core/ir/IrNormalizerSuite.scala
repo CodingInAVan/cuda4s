@@ -62,6 +62,53 @@ class IrNormalizerSuite extends FunSuite:
     assertEquals(IrNormalizer.expression(divisionByZero), divisionByZero)
     assertEquals(IrNormalizer.expression(overflow), overflow)
 
+  test("simplifies evaluation-preserving I32 identities and keeps the outer span"):
+    val childSpan = SourceSpan("Kernel.scala", 5, 14, 5, 25)
+    val outerSpan = SourceSpan("Kernel.scala", 5, 11, 5, 30)
+    val value = Intrinsic("threadIdx.x", I32, childSpan)
+    val expected = Intrinsic("threadIdx.x", I32, outerSpan)
+    val expressions = Vector(
+      Binary(BinaryOperator.Add, value, Literal(0, I32), I32, outerSpan),
+      Binary(BinaryOperator.Add, Literal(0, I32), value, I32, outerSpan),
+      Binary(BinaryOperator.Subtract, value, Literal(0, I32), I32, outerSpan),
+      Binary(BinaryOperator.Multiply, value, Literal(1, I32), I32, outerSpan),
+      Binary(BinaryOperator.Multiply, Literal(1, I32), value, I32, outerSpan),
+      Binary(BinaryOperator.Divide, value, Literal(1, I32), I32, outerSpan)
+    )
+
+    expressions.foreach { expression =>
+      assertEquals(IrNormalizer.expression(expression), expected)
+    }
+
+  test("does not apply evaluation-eliminating or non-I32 identities"):
+    val input = Load(
+      BufferElement[Int, ReadOnly]("input", Literal(0, I32), I32)
+    )
+    val multiplyByZero = Binary(
+      BinaryOperator.Multiply,
+      input,
+      Literal(0, I32),
+      I32
+    )
+    val remainderByOne = Binary(
+      BinaryOperator.Remainder,
+      input,
+      Literal(1, I32),
+      I32
+    )
+    val selfSubtract = Binary(BinaryOperator.Subtract, input, input, I32)
+    val floatIdentity = Binary(
+      BinaryOperator.Add,
+      Intrinsic("value", F32),
+      Literal(0.0f, F32),
+      F32
+    )
+
+    assertEquals(IrNormalizer.expression(multiplyByZero), multiplyByZero)
+    assertEquals(IrNormalizer.expression(remainderByOne), remainderByOne)
+    assertEquals(IrNormalizer.expression(selfSubtract), selfSubtract)
+    assertEquals(IrNormalizer.expression(floatIdentity), floatIdentity)
+
   test("normalizes kernel expression positions and is idempotent"):
     val result = output[Int]("result")
     val definition = kernel("foldKernel", params(result)) { bindings =>

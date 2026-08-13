@@ -159,9 +159,9 @@ private[core] object IrNormalizer:
   ): Expr[T] =
     val left = expression(binary.left, scope)
     val right = expression(binary.right, scope)
-    foldIntegerBinary(binary, left, right).getOrElse(
-      binary.copy(left = left, right = right)
-    )
+    foldIntegerBinary(binary, left, right)
+      .orElse(simplifyIntegerIdentity(binary, left, right))
+      .getOrElse(binary.copy(left = left, right = right))
 
   private def normalizeComparison[T](
       comparison: Compare[T],
@@ -215,6 +215,45 @@ private[core] object IrNormalizer:
               }
             case _ => None
         case _ => None
+
+  private def simplifyIntegerIdentity[T](
+      binary: Binary[T],
+      left: Expr[T],
+      right: Expr[T]
+  ): Option[Expr[T]] =
+    if binary.valueType != I32 then None
+    else
+      (binary.operator, integerLiteralValue(left), integerLiteralValue(right)) match
+        case (BinaryOperator.Add, _, Some(0)) =>
+          Some(withSpan(left, binary.span))
+        case (BinaryOperator.Add, Some(0), _) =>
+          Some(withSpan(right, binary.span))
+        case (BinaryOperator.Subtract, _, Some(0)) =>
+          Some(withSpan(left, binary.span))
+        case (BinaryOperator.Multiply, _, Some(1)) =>
+          Some(withSpan(left, binary.span))
+        case (BinaryOperator.Multiply, Some(1), _) =>
+          Some(withSpan(right, binary.span))
+        case (BinaryOperator.Divide, _, Some(1)) =>
+          Some(withSpan(left, binary.span))
+        case _ => None
+
+  // Rewrites retain the complete source expression for generated-CUDA diagnostics.
+  private def withSpan[T](expression: Expr[T], span: SourceSpan): Expr[T] =
+    expression match
+      case literal: Literal[?] => literal.copy(span = span).asInstanceOf[Expr[T]]
+      case binary: Binary[?] => binary.copy(span = span).asInstanceOf[Expr[T]]
+      case comparison: Compare[?] => comparison.copy(span = span).asInstanceOf[Expr[T]]
+      case intrinsic: Intrinsic[?] => intrinsic.copy(span = span).asInstanceOf[Expr[T]]
+      case conversion: Convert[?, ?] => conversion.copy(span = span).asInstanceOf[Expr[T]]
+      case accumulation: ToAccumulator[?, ?] =>
+        accumulation.copy(span = span).asInstanceOf[Expr[T]]
+      case index: ReductionIndex => index.copy(span = span).asInstanceOf[Expr[T]]
+      case index: LoopIndex => index.copy(span = span).asInstanceOf[Expr[T]]
+      case reduction: ReduceSum[?, ?] => reduction.copy(span = span).asInstanceOf[Expr[T]]
+      case load: Load[?, ?, ?] => load.copy(span = span).asInstanceOf[Expr[T]]
+      case parameter: ScalarParam[?] =>
+        parameter.copy(span = span)(using parameter.scalarAbi).asInstanceOf[Expr[T]]
 
   private def integerBinaryResult(
       operator: BinaryOperator,
