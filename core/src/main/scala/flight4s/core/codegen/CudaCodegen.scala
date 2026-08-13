@@ -7,7 +7,7 @@ import flight4s.core.ir.*
 import flight4s.core.types.*
 
 object CudaCodegen:
-  val ArtifactVersion: Int = 5
+  val ArtifactVersion: Int = 6
 
   def generate[Args <: Tuple](
       kernel: Kernel[Args],

@@ -271,6 +271,111 @@ class IrNormalizerSuite extends FunSuite:
     assertEquals(normalized.body.statements.size, 2)
     assertEquals(store.value, Literal(5, I32))
 
+  test("eliminates repeated stable I32 expressions within one statement"):
+    val firstSpan = SourceSpan("Kernel.scala", 7, 15, 7, 30)
+    val secondSpan = SourceSpan("Kernel.scala", 7, 33, 7, 48)
+    val first = Binary(
+      BinaryOperator.Add,
+      Intrinsic("threadIdx.x", I32),
+      Literal(2, I32),
+      I32,
+      firstSpan
+    )
+    val second = first.copy(span = secondSpan)
+    val result = BufferElement[Int, ReadWrite]("result", literal(0), I32)
+    val occupied = LocalVariable("flight4s_cse_0", I32)
+    val definition = KernelIR(
+      "localCse",
+      params(output[Int]("result")),
+      Block(
+        Vector(
+          LocalDeclaration(occupied, Literal(7, I32)),
+          Store(
+            result,
+            Binary(BinaryOperator.Multiply, first, second, I32)
+          )
+        )
+      )
+    )
+
+    val normalized = IrNormalizer.kernel(definition)
+    val generated = normalized.body.statements(1).asInstanceOf[LocalDeclaration[Int]]
+    val store = normalized.body.statements(2).asInstanceOf[Store[Int, Global]]
+    val product = store.value.asInstanceOf[Binary[Int]]
+
+    assertEquals(generated.local.name, "flight4s_cse_1")
+    assertEquals(generated.initial, first)
+    assertEquals(product.left, Load(generated.local, firstSpan))
+    assertEquals(product.right, Load(generated.local, secondSpan))
+    assertEquals(IrNormalizer.kernel(normalized), normalized)
+
+  test("keeps CSE within stable I32 expressions and one statement"):
+    val inputElement = BufferElement[Int, ReadOnly]("input", literal(0), I32)
+    val loaded = Binary(
+      BinaryOperator.Add,
+      Load(inputElement),
+      Literal(1, I32),
+      I32
+    )
+    val floatValue = Binary(
+      BinaryOperator.Add,
+      Intrinsic("value", F32),
+      Literal(1.0f, F32),
+      F32
+    )
+    val intOutput = BufferElement[Int, ReadWrite]("intOutput", literal(0), I32)
+    val floatOutput = BufferElement[Float, ReadWrite]("floatOutput", literal(0), F32)
+    val repeated = Binary(
+      BinaryOperator.Add,
+      Intrinsic("threadIdx.x", I32),
+      Literal(2, I32),
+      I32
+    )
+    val definition = KernelIR(
+      "cseBoundaries",
+      params(
+        input[Int]("input"),
+        output[Int]("intOutput"),
+        output[Float]("floatOutput")
+      ),
+      Block(
+        Vector(
+          Store(
+            intOutput,
+            Binary(BinaryOperator.Add, loaded, loaded, I32)
+          ),
+          Store(intOutput, repeated),
+          Store(intOutput, repeated),
+          Store(
+            floatOutput,
+            Binary(BinaryOperator.Multiply, floatValue, floatValue, F32)
+          )
+        )
+      )
+    )
+
+    val normalized = IrNormalizer.kernel(definition)
+
+    assertEquals(normalized.body.statements.size, definition.body.statements.size)
+    assertEquals(normalized.body, definition.body)
+
+  test("does not hoist repeated expressions out of reduction scope"):
+    val result = output[Int]("result")
+    val definition = kernel("reductionCseBoundary", params(result)) { bindings =>
+      val sum = reduceSum("index", literal(0), literal(4), literal(0)) { index =>
+        val repeated = index + literal(1)
+        repeated * repeated
+      }
+      bindings.head(literal(0)) := sum
+    }
+
+    val normalized = IrNormalizer.kernel(definition.ir)
+    val store = normalized.body.statements.head.asInstanceOf[Store[Int, Global]]
+    val reduction = store.value.asInstanceOf[ReduceSum[Int, Int]]
+
+    assertEquals(normalized.body.statements.size, 1)
+    assert(reduction.value.isInstanceOf[Binary[?]])
+
   test("does not propagate outer local facts through structured control flow"):
     val value = LocalVariable("value", I32)
     val index = LoopIndex("index")

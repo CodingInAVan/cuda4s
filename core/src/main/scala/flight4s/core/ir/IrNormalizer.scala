@@ -24,19 +24,35 @@ private[core] object IrNormalizer:
     val empty: ConstantScope = ConstantScope()
 
   def module(module: CudaModuleIR): CudaModuleIR =
-    module.copy(kernels = module.kernels.map(kernel))
+    val reservedNames = module.constants.map(_.name).toSet
+    module.copy(
+      kernels = module.kernels.map(normalizeKernel(_, reservedNames))
+    )
 
   def kernel[Args <: Tuple](kernel: KernelIR[Args]): KernelIR[Args] =
-    kernel.copy(body = normalizeBlock(kernel.body, ConstantScope.empty)._1)
+    normalizeKernel(kernel, Set.empty)
 
   def block(block: Block): Block =
-    normalizeBlock(block, ConstantScope.empty)._1
+    LocalCommonSubexpressionElimination.block(
+      normalizeBlock(block, ConstantScope.empty)._1
+    )
 
-  def statement(statement: Stmt): Option[Stmt] =
-    normalizeStatement(statement, ConstantScope.empty)._1
+  def statement(statement: Stmt): Vector[Stmt] =
+    normalizeStatement(statement, ConstantScope.empty)._1.toVector.flatMap { normalized =>
+      LocalCommonSubexpressionElimination.block(Block(Vector(normalized))).statements
+    }
 
   def expression[T](expr: Expr[T]): Expr[T] =
     expression(expr, ConstantScope.empty)
+
+  private def normalizeKernel[Args <: Tuple](
+      kernel: KernelIR[Args],
+      reservedNames: Set[String]
+  ): KernelIR[Args] =
+    val normalized = kernel.copy(
+      body = normalizeBlock(kernel.body, ConstantScope.empty)._1
+    )
+    LocalCommonSubexpressionElimination.kernel(normalized, reservedNames)
 
   private def normalizeBlock(
       block: Block,
