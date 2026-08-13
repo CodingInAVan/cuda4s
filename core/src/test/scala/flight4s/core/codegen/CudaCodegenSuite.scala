@@ -451,6 +451,26 @@ class CudaCodegenSuite extends FunSuite:
     assert(originalDeclaration.initial.isInstanceOf[Binary[?]])
     assert(originalStore.value.isInstanceOf[Binary[?]])
 
+  test("code generation simplifies evaluation-preserving I32 identities"):
+    val outputBuffer = output[Int]("output")
+    val definition = kernel("simplifyIdentity", params(outputBuffer)) { bindings =>
+      bindings.head(threadIdx.x) :=
+        ((literal(0) + (threadIdx.x * literal(1))) - literal(0)) / literal(1)
+    }
+
+    val generated = generatedKernel(definition)
+
+    assertEquals(
+      generated.cudaSource,
+      """extern "C" __global__ void simplifyIdentity(int* output) {
+        |  output[threadIdx.x] = threadIdx.x;
+        |}
+        |""".stripMargin.replace("\r\n", "\n")
+    )
+    val originalStore = definition.body.statements.head
+      .asInstanceOf[Store[Int, Global]]
+    assert(originalStore.value.isInstanceOf[Binary[?]])
+
   test("source generation is gated by module validation"):
     val invalid = KernelIR(
       "invalid-name",
