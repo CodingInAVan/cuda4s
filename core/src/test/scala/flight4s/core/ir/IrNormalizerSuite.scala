@@ -405,3 +405,87 @@ class IrNormalizerSuite extends FunSuite:
 
     assertEquals(afterBranch.value, Load(value))
     assertEquals(insideLoop.value, Load(value))
+
+  test("normalization preserves observable effects and their order"):
+    def observableTrace(block: Block): Vector[String] =
+      block.statements.collect:
+        case store: Store[?, ?] =>
+          store.to match
+            case buffer: BufferElement[?, ?] =>
+              s"store:global:${buffer.bufferName}"
+            case shared: SharedElement[?] =>
+              s"store:shared:${shared.arrayName}"
+            case local: LocalVariable[?] =>
+              s"store:local:${local.name}"
+            case localArray: LocalArrayElement[?] =>
+              s"store:local-array:${localArray.arrayName}"
+        case accumulation: Accumulate[?] =>
+          s"accumulate:${accumulation.target.name}"
+        case _: Barrier => "barrier"
+
+    val accumulator = LocalVariable("accumulator", I32)
+    val repeatedLeft = Binary(
+      BinaryOperator.Add,
+      Intrinsic("threadIdx.x", I32),
+      Literal(1, I32),
+      I32
+    )
+    val repeatedRight = repeatedLeft.copy()
+    val original = Block(
+      Vector(
+        LocalDeclaration(
+          accumulator,
+          Binary(
+            BinaryOperator.Add,
+            Literal(1, I32),
+            Literal(2, I32),
+            I32
+          )
+        ),
+        Store(
+          BufferElement[Int, ReadWrite]("output", Literal(0, I32), I32),
+          Binary(
+            BinaryOperator.Multiply,
+            repeatedLeft,
+            repeatedRight,
+            I32
+          )
+        ),
+        Store(
+          SharedElement("tile", Vector(Literal(0, I32)), I32),
+          Literal(7, I32)
+        ),
+        Barrier(),
+        Accumulate(
+          accumulator,
+          Literal(4, I32),
+          summon[AdditiveType[Int]]
+        ),
+        Store(
+          BufferElement[Int, ReadWrite]("output", Literal(1, I32), I32),
+          Load(accumulator)
+        ),
+        Barrier()
+      )
+    )
+
+    val normalized = IrNormalizer.block(original)
+    val normalizedAccumulator =
+      normalized.statements.head.asInstanceOf[LocalDeclaration[Int]]
+
+    assertEquals(normalizedAccumulator.initial, Literal(3, I32))
+    assertEquals(normalized.statements.size, original.statements.size + 1)
+    assertEquals(EffectAnalysis.block(normalized), EffectAnalysis.block(original))
+    assertEquals(
+      observableTrace(original),
+      Vector(
+        "store:global:output",
+        "store:shared:tile",
+        "barrier",
+        "accumulate:accumulator",
+        "store:global:output",
+        "barrier"
+      )
+    )
+    assertEquals(observableTrace(normalized), observableTrace(original))
+    assertEquals(IrNormalizer.block(normalized), normalized)
