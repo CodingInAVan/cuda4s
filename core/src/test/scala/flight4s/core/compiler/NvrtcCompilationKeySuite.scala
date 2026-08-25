@@ -5,6 +5,7 @@ import munit.FunSuite
 import flight4s.core.codegen.*
 import flight4s.core.dsl.CudaDsl.*
 import flight4s.core.ir.{ReductionPolicy, SourceSpan}
+import flight4s.core.unsafe.raw.RawCuda
 
 class NvrtcCompilationKeySuite extends FunSuite:
   private val target = ComputeCapability(8, 0)
@@ -26,7 +27,7 @@ class NvrtcCompilationKeySuite extends FunSuite:
     assertEquals(first.toString, first.hex)
     assertEquals(
       first.hex,
-      "0ca290763cb38aa85be2bba6745fe316ab20e89788c3c9c188f0f154a1caca8a"
+      "e03e074906e92c6e7c00e58e46ca8b0db07916bdc014b9e2be8062c672ad5b64"
     )
 
   test("every compiler-relevant input invalidates the key"):
@@ -132,6 +133,124 @@ class NvrtcCompilationKeySuite extends FunSuite:
     assertNotEquals(strict, fast)
     assertNotEquals(deterministic, fast)
 
+  test("raw CUDA identity includes source, ABI, launch, options, and environment"):
+    val signature = params(
+      input[Float]("source"),
+      output[Float]("destination")
+    )
+    val source =
+      "extern \"C\" __global__ void rawCopy(const float* source, float* destination) {}"
+    val definition = RawCuda.kernel(
+      "rawCopy",
+      signature,
+      source,
+      CompilerOptions(),
+      KernelLaunchRequirements()
+    )
+    val baseKey = deriveInput(NvrtcCompilationInput.raw(definition))
+    val changedAbi = RawCuda.kernel(
+      "rawCopy",
+      params(value[Float]("source"), output[Float]("destination")),
+      source,
+      CompilerOptions(),
+      KernelLaunchRequirements()
+    )
+    val changedLaunch = RawCuda.kernel(
+      "rawCopy",
+      signature,
+      source,
+      CompilerOptions(),
+      KernelLaunchRequirements(Some(DynamicSharedMemoryRequirement(4, 4)))
+    )
+    val changedOptions = RawCuda.kernel(
+      "rawCopy",
+      signature,
+      source,
+      CompilerOptions(additionalNvrtcOptions = Vector("--use_fast_math")),
+      KernelLaunchRequirements()
+    )
+
+    val variants = Vector(
+      "source" -> deriveInput(
+        NvrtcCompilationInput.raw(
+          RawCuda.kernel(
+            "rawCopy",
+            signature,
+            source + "\n// changed",
+            CompilerOptions(),
+            KernelLaunchRequirements()
+          )
+        )
+      ),
+      "entry point" -> deriveInput(
+        NvrtcCompilationInput.raw(
+          RawCuda.kernel(
+            "renamedRawCopy",
+            signature,
+            source,
+            CompilerOptions(),
+            KernelLaunchRequirements()
+          )
+        )
+      ),
+      "ABI" -> deriveInput(NvrtcCompilationInput.raw(changedAbi)),
+      "launch requirements" -> deriveInput(
+        NvrtcCompilationInput.raw(changedLaunch)
+      ),
+      "compiler options" -> deriveInput(
+        NvrtcCompilationInput.raw(changedOptions)
+      ),
+      "compute capability" -> deriveInput(
+        NvrtcCompilationInput.raw(definition),
+        target = ComputeCapability(9, 0)
+      ),
+      "NVRTC version" -> deriveInput(
+        NvrtcCompilationInput.raw(definition),
+        nvrtcVersion = NvrtcVersion(13, 1)
+      ),
+      "program name" -> deriveInput(
+        NvrtcCompilationInput.raw(definition),
+        programName = "renamed.cu"
+      )
+    )
+
+    variants.foreach { case (label, variantKey) =>
+      assertNotEquals(baseKey, variantKey, s"$label did not invalidate the raw key")
+    }
+
+  test("generated and raw provenance cannot share a compilation identity"):
+    val signature = params(value[Int]("count"))
+    val source = "extern \"C\" __global__ void sameSource(int count) {}"
+    val options = CompilerOptions()
+    val requirements = KernelLaunchRequirements()
+    val generatedKernel = GeneratedKernel(
+      "sameSource",
+      signature,
+      source,
+      SourceMap(Vector.empty),
+      options,
+      declarationLine = 1,
+      requirements
+    )
+    val generated = GeneratedCudaModule(
+      source,
+      SourceMap(Vector.empty),
+      options,
+      Vector(generatedKernel)
+    )
+    val raw = RawCuda.kernel(
+      "sameSource",
+      signature,
+      source,
+      options,
+      requirements
+    )
+
+    assertNotEquals(
+      deriveInput(NvrtcCompilationInput.generated(generated)),
+      deriveInput(NvrtcCompilationInput.raw(raw))
+    )
+
   test("invalid key inputs are rejected before hashing"):
     val generated = copyModule()
 
@@ -161,6 +280,19 @@ class NvrtcCompilationKeySuite extends FunSuite:
       nvrtcVersion,
       programName,
       codegenVersion
+    )
+
+  private def deriveInput(
+      input: NvrtcCompilationInput,
+      target: ComputeCapability = target,
+      nvrtcVersion: NvrtcVersion = version,
+      programName: String = programName
+  ): NvrtcCompilationKey =
+    NvrtcCompilationKey.derive(
+      input,
+      target,
+      nvrtcVersion,
+      programName
     )
 
   private def copyModule(
